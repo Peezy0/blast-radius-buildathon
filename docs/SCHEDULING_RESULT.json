@@ -1,0 +1,218 @@
+{
+  "scope": "Public sample only; full test suite selected on every patch. Measures scheduling, not test selection.",
+  "official_scorer": "official/score.py evaluate_run; no selector CPU included in simulated totals",
+  "duration_conversion": "math.floor(seconds * 1000 + 0.5), exactly matching the official scorer",
+  "test_count": 1620,
+  "sample_commit_count": 30,
+  "baseline": {
+    "workers": 3,
+    "selected_tests": 1620,
+    "worker_load_milliseconds": [
+      34349,
+      34349,
+      34349
+    ],
+    "simulated_milliseconds_per_commit": 40349,
+    "simulated_milliseconds_total": 1210470,
+    "simulated_seconds_total": 1210.47,
+    "missed_commits": [],
+    "output_bytes": 210780
+  },
+  "optimized": {
+    "workers": 4,
+    "selected_tests": 1620,
+    "worker_load_milliseconds": [
+      28817,
+      24744,
+      24743,
+      24743
+    ],
+    "simulated_milliseconds_per_commit": 36817,
+    "simulated_milliseconds_total": 1104510,
+    "simulated_seconds_total": 1104.51,
+    "missed_commits": [],
+    "output_bytes": 210840
+  },
+  "improvement": {
+    "simulated_milliseconds_saved": 105960,
+    "simulated_seconds_saved": 105.96,
+    "percent_saved": 8.753624625145605
+  },
+  "scheduler_benchmark": {
+    "runs": 15,
+    "median_process_cpu_milliseconds": 2.451000000000002,
+    "python_version": "3.11.0",
+    "platform": "Darwin arm64",
+    "note": "Local process CPU for one scheduler call. Actual contest scores add entire container CPU on linux/amd64."
+  },
+  "per_commit": [
+    {
+      "commit": "2haz",
+      "baseline_milliseconds": 40349,
+      "optimized_milliseconds": 36817
+    },
+    {
+      "commit": "2jrq",
+      "baseline_milliseconds": 40349,
+      "optimized_milliseconds": 36817
+    },
+    {
+      "commit": "2qn5",
+      "baseline_milliseconds": 40349,
+      "optimized_milliseconds": 36817
+    },
+    {
+      "commit": "2vdj",
+      "baseline_milliseconds": 40349,
+      "optimized_milliseconds": 36817
+    },
+    {
+      "commit": "3utz",
+      "baseline_milliseconds": 40349,
+      "optimized_milliseconds": 36817
+    },
+    {
+      "commit": "4d63",
+      "baseline_milliseconds": 40349,
+      "optimized_milliseconds": 36817
+    },
+    {
+      "commit": "535z",
+      "baseline_milliseconds": 40349,
+      "optimized_milliseconds": 36817
+    },
+    {
+      "commit": "5y72",
+      "baseline_milliseconds": 40349,
+      "optimized_milliseconds": 36817
+    },
+    {
+      "commit": "66ks",
+      "baseline_milliseconds": 40349,
+      "optimized_milliseconds": 36817
+    },
+    {
+      "commit": "6vvp",
+      "baseline_milliseconds": 40349,
+      "optimized_milliseconds": 36817
+    },
+    {
+      "commit": "6ze8",
+      "baseline_milliseconds": 40349,
+      "optimized_milliseconds": 36817
+    },
+    {
+      "commit": "8y7j",
+      "baseline_milliseconds": 40349,
+      "optimized_milliseconds": 36817
+    },
+    {
+      "commit": "986c",
+      "baseline_milliseconds": 40349,
+      "optimized_milliseconds": 36817
+    },
+    {
+      "commit": "9u5k",
+      "baseline_milliseconds": 40349,
+      "optimized_milliseconds": 36817
+    },
+    {
+      "commit": "ary6",
+      "baseline_milliseconds": 40349,
+      "optimized_milliseconds": 36817
+    },
+    {
+      "commit": "bap8",
+      "baseline_milliseconds": 40349,
+      "optimized_milliseconds": 36817
+    },
+    {
+      "commit": "bj7g",
+      "baseline_milliseconds": 40349,
+      "optimized_milliseconds": 36817
+    },
+    {
+      "commit": "bvw2",
+      "baseline_milliseconds": 40349,
+      "optimized_milliseconds": 36817
+    },
+    {
+      "commit": "egys",
+      "baseline_milliseconds": 40349,
+      "optimized_milliseconds": 36817
+    },
+    {
+      "commit": "f4bn",
+      "baseline_milliseconds": 40349,
+      "optimized_milliseconds": 36817
+    },
+    {
+      "commit": "f4xa",
+      "baseline_milliseconds": 40349,
+      "optimized_milliseconds": 36817
+    },
+    {
+      "commit": "fryt",
+      "baseline_milliseconds": 40349,
+      "optimized_milliseconds": 36817
+    },
+    {
+      "commit": "gbav",
+      "baseline_milliseconds": 40349,
+      "optimized_milliseconds": 36817
+    },
+    {
+      "commit": "gbhk",
+      "baseline_milliseconds": 40349,
+      "optimized_milliseconds": 36817
+    },
+    {
+      "commit": "j6uz",
+      "baseline_milliseconds": 40349,
+      "optimized_milliseconds": 36817
+    },
+    {
+      "commit": "ktz3",
+      "baseline_milliseconds": 40349,
+      "optimized_milliseconds": 36817
+    },
+    {
+      "commit": "mthh",
+      "baseline_milliseconds": 40349,
+      "optimized_milliseconds": 36817
+    },
+    {
+      "commit": "nwnx",
+      "baseline_milliseconds": 40349,
+      "optimized_milliseconds": 36817
+    },
+    {
+      "commit": "rszg",
+      "baseline_milliseconds": 40349,
+      "optimized_milliseconds": 36817
+    },
+    {
+      "commit": "st8f",
+      "baseline_milliseconds": 40349,
+      "optimized_milliseconds": 36817
+    }
+  ],
+  "optimality_certificate": {
+    "full_suite_total_milliseconds": 103047,
+    "largest_test_milliseconds": 28817,
+    "lower_bound_by_worker_count_milliseconds": {
+      "1": 105047,
+      "2": 55524,
+      "3": 40349,
+      "4": 36817,
+      "5": 38817,
+      "6": 40817,
+      "7": 42817,
+      "8": 44817
+    },
+    "best_lower_bound_milliseconds": 36817,
+    "achieved_milliseconds_per_commit": 36817,
+    "globally_optimal_for_full_suite": true,
+    "note": "For every k, makespan >= max(longest_test, ceil(total_test_time/k)). The achieved cost attains the smallest resulting bound over all allowed worker counts."
+  }
+}
