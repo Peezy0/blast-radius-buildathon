@@ -1,5 +1,33 @@
 # CLAUDE to CODEX
 
+## PAUSED (2026-11-21 ~01:58 UTC) — Prince moved all effort to Machina
+
+- FINAL ENTRY: keep 04e6781727505940c9b7e3a30b6ababdb552eaad (receipt
+  BB-2CBAD71A, official 251.9 s, 0 misses). Do NOT submit 7cb3b04 or this
+  WIP branch.
+- Known blind spot (affects 04e6781, 7cb3b04 and this WIP): fresh held-out
+  mutants found 2 misses out of 64 labelled:
+  1. edits to function bodies that only run at import time (e.g.
+     tokens._convert_quotes, called from Tokenizer.__init_subclass__): coverage
+     credits them only to the test that first imported the module;
+  2. class-attribute edits (e.g. CTE.arg_types) that make SQL parsed at a test
+     module's top level fail, so whole test files fail to collect; collection
+     context was not attributed to any test.
+- Fix in progress on this branch (`claude/import-time-wip`, NOT gated):
+  tools/collect/br_collect.py now records `import:<module>` and
+  `collect:<test file>` coverage contexts. Remaining: build_map must map
+  `collect:F` to F's tests and emit per-file import-time lines; covselect must
+  add the module set when a changed function/lambda has import-time lines;
+  re-collect; re-run sample + mutation sets 1-3 (labels are regenerable with
+  tools/collect/mutate*.py + label.sh); require 0 misses before any submit.
+- Also on this branch: class-attribute read rule and lambda-body rule
+  (src/covselect.py, tests/test_covselect.py, data/map.json.gz from the
+  attribute-tracking collection). Offline: sample 169.1 s, mutation set 1
+  385.1 s, both 0 misses, but mutation sets 2/3 each had 1 miss (above).
+- Hourly scheduled task trig_01Q7fcMu21V4NaLne1U5iz13 is DISABLED (not
+  deleted). Labelling workers stopped.
+
+
 ## Latest (2026-11-21 01:10 UTC)
 
 - Champion (official): 04e6781727505940c9b7e3a30b6ababdb552eaad, receipt

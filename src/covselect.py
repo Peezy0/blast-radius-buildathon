@@ -337,6 +337,55 @@ def _scope_signature(tree):
     return sig
 
 
+_IGNORED_FIELDS = {"ctx", "lineno", "col_offset", "end_lineno", "end_col_offset", "type_comment"}
+
+
+def _diff_path(a, b):
+    """Ancestor chain (outermost first) down to the deepest node of `a` under
+    which every difference between `a` and `b` lies; None if identical."""
+    if type(a) is not type(b):
+        return []
+    if isinstance(a, ast.AST):
+        diffs = []
+        for field in a._fields:
+            if field in _IGNORED_FIELDS:
+                continue
+            va, vb = getattr(a, field, None), getattr(b, field, None)
+            if isinstance(va, list) or isinstance(vb, list):
+                if not (isinstance(va, list) and isinstance(vb, list)) or len(va) != len(vb):
+                    return [a]
+                for x, y in zip(va, vb):
+                    d = _diff_path(x, y)
+                    if d is not None:
+                        diffs.append(d)
+            else:
+                d = _diff_path(va, vb)
+                if d is not None:
+                    diffs.append(d)
+        if not diffs:
+            return None
+        if len(diffs) == 1:
+            return [a] + diffs[0]
+        return [a]
+    return None if a == b else []
+
+
+def _lambda_body_change(old_st, new_st):
+    """If the only difference between two statements is inside one lambda's
+    body (not its arguments), return that lambda node of the old tree."""
+    if old_st is None or new_st is None:
+        return None
+    path = _diff_path(old_st[2], new_st[2])
+    if not path:
+        return None
+    for i, node in enumerate(path):
+        if isinstance(node, ast.Lambda) and i + 1 < len(path):
+            below = path[i + 1]
+            if below is node.body or any(below is n for n in ast.walk(node.body)):
+                return node
+    return None
+
+
 def select_file(rec, hunks):
     source = rec["source"]
     new_source, deleted, added = apply(source, hunks)
@@ -353,20 +402,29 @@ def select_file(rec, hunks):
     oidx = _Index(old_tree)
     nidx = _Index(new_tree)
     out = set(rec["sets"][rec["readers"]])
-    attr_ok = _class_targets(old_tree) == _class_targets(new_tree)
-    for line in deleted:
-        if _is_noop_line(old_lines[line - 1], line, old_spans):
-            continue
-        out |= _old_line_tests(rec, oidx, line, nidx, attr_ok)
-    scope_same = _scope_signature(old_tree) == _scope_signature(new_tree)
     # class attribute rule only when no class gains, loses or renames an attribute
     attr_ok = _class_targets(old_tree) == _class_targets(new_tree)
-    for new_line, before_old, has_del, paired in added:
-        if _is_noop_line(new_lines[new_line - 1], new_line, new_spans):
+    scope_same = _scope_signature(old_tree) == _scope_signature(new_tree)
+    paired_old = {p for _, _, _, p in added if p is not None} if scope_same else set()
+    for line in deleted:
+        if line in paired_old or _is_noop_line(old_lines[line - 1], line, old_spans):
             continue
+        out |= _old_line_tests(rec, oidx, line, nidx, attr_ok)
+    for new_line, before_old, has_del, paired in added:
         if paired is not None and scope_same:
-            # one-for-one line replacement: the old statement rule covers it
-            out |= _old_line_tests(rec, oidx, paired, nidx, attr_ok)
+            if _is_noop_line(new_lines[new_line - 1], new_line, new_spans) and _is_noop_line(
+                old_lines[paired - 1], paired, old_spans
+            ):
+                continue
+            # one-for-one line replacement: the old statement rule covers it,
+            # narrowed to a lambda's executions when only its body changed
+            lam = _lambda_body_change(oidx.stmt(paired), nidx.stmt(new_line))
+            if lam is not None:
+                out |= _lines_tests(rec, lam.lineno, lam.end_lineno)
+            else:
+                out |= _old_line_tests(rec, oidx, paired, nidx, attr_ok)
+            continue
+        if _is_noop_line(new_lines[new_line - 1], new_line, new_spans):
             continue
         if has_del:
             # replacement: map to the old statement at the same spot as well

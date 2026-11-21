@@ -1,0 +1,128 @@
+"""Regression tests for src/covselect.py on a small synthetic map."""
+
+import difflib
+from pathlib import Path
+import sys
+import unittest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from src.covselect import Unknown, select
+
+SRC = '''import os
+
+LIMIT = 3
+
+
+class Box:
+    SIZE = 1
+    HOOKS = {
+        "a": lambda x: x + 1,
+        "b": lambda x: x * 2,
+    }
+
+    def grow(self, n=1):
+        total = 0
+        if n > LIMIT:
+            total = n
+        return total + self.SIZE
+
+
+def helper(v):
+    return v
+'''
+
+
+def make_map():
+    # tests: 0 runs grow with big n, 1 runs grow with small n, 2 calls hook a,
+    # 3 calls hook b, 4 reads fixture, 5 instantiates Box only
+    sets = [[0], [0, 1], [2], [3], [0, 1, 5], [0, 1, 2, 3, 5], [], [0, 1]]
+    lines = {
+        "14": 1, "15": 1, "16": 0, "17": 1,  # grow body
+        "9": 2, "10": 3,  # lambda bodies
+        "21": 6,
+    }
+    return {
+        "tests": ["t0", "t1", "t2", "t3", "t4", "t5"],
+        "files": {
+            "pkg/box.py": {
+                "source": SRC,
+                "lines": lines,
+                "module": 5,
+                "classes": {"Box": 4},
+                "readers": 6,
+                "attrs": {"Box": {"SIZE": 7}},
+                "sets": sets,
+            }
+        },
+        "data": {"tests/fixtures/f.sql": [4]},
+        "dirs": {},
+    }
+
+
+def patch(old, new, path="pkg/box.py"):
+    return "".join(difflib.unified_diff(
+        old.splitlines(True), new.splitlines(True), "a/" + path, "b/" + path, n=3))
+
+
+class CovSelectTests(unittest.TestCase):
+    def setUp(self):
+        self.map = make_map()
+
+    def sel(self, new):
+        return select(patch(SRC, new), self.map)
+
+    def test_statement_only_executed_by_some_tests(self):
+        self.assertEqual(self.sel(SRC.replace("total = n", "total = n + 1")), {0})
+
+    def test_condition_line(self):
+        self.assertEqual(self.sel(SRC.replace("if n > LIMIT", "if n >= LIMIT")), {0, 1})
+
+    def test_never_executed_statement(self):
+        self.assertEqual(self.sel(SRC.replace("return v", "return -v")), set())
+
+    def test_comment_only(self):
+        self.assertEqual(self.sel(SRC.replace("        total = 0\n", "        # note\n        total = 0\n")), set())
+
+    def test_inserted_statement_uses_function(self):
+        new = SRC.replace("        total = 0\n", "        total = 0\n        n = abs(n)\n")
+        self.assertEqual(self.sel(new), {0, 1})
+
+    def test_lambda_body_only(self):
+        self.assertEqual(self.sel(SRC.replace("x * 2", "x * 3")), {3})
+
+    def test_lambda_key_change_is_class_level(self):
+        self.assertEqual(self.sel(SRC.replace('"b": lambda', '"c": lambda')), {0, 1, 5})
+
+    def test_class_attribute_readers(self):
+        self.assertEqual(self.sel(SRC.replace("SIZE = 1", "SIZE = 2")), {0, 1})
+
+    def test_module_level_constant(self):
+        self.assertEqual(self.sel(SRC.replace("LIMIT = 3", "LIMIT = 4")), {0, 1, 2, 3, 5})
+
+    def test_default_argument(self):
+        self.assertEqual(self.sel(SRC.replace("n=1", "n=2")), {0, 1})
+
+    def test_new_local_name_widens_to_function(self):
+        new = SRC.replace("total = n\n", "totl = n\n")
+        self.assertEqual(self.sel(new), {0, 1})
+
+    def test_fixture(self):
+        p = patch("SELECT 1;\n", "SELECT 2;\n", "tests/fixtures/f.sql")
+        self.assertEqual(select(p, self.map), {4})
+
+    def test_syntax_error_is_unknown(self):
+        with self.assertRaises(Unknown):
+            self.sel(SRC.replace("return total + self.SIZE", "return total +"))
+
+    def test_rename_is_unknown(self):
+        p = "--- a/pkg/box.py\n+++ b/pkg/other.py\n@@ -1 +1 @@\n-import os\n+import sys\n"
+        with self.assertRaises(Unknown):
+            select(p, self.map)
+
+    def test_unmapped_python_is_unknown(self):
+        with self.assertRaises(Unknown):
+            select(patch("a = 1\n", "a = 2\n", "sqlglot/new.py"), self.map)
+
+
+if __name__ == "__main__":
+    unittest.main()

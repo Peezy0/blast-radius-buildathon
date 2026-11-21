@@ -90,6 +90,8 @@ def _instrument_module(mod):
             except (TypeError, AttributeError):
                 pass
 
+_import_ctx_stack = []
+
 class _Loader(importlib.abc.Loader):
     def __init__(self, inner):
         self.inner = inner
@@ -97,10 +99,16 @@ class _Loader(importlib.abc.Loader):
         return self.inner.create_module(spec)
     def exec_module(self, module):
         _import_depth[0] += 1
+        # code run while a sqlglot module executes is import-time code: its
+        # effects persist for every later test, so record it separately
+        _import_ctx_stack.append("import:" + module.__name__)
+        _cov.switch_context(_import_ctx_stack[-1])
         try:
             self.inner.exec_module(module)
         finally:
             _import_depth[0] -= 1
+            _import_ctx_stack.pop()
+            _cov.switch_context(_import_ctx_stack[-1] if _import_ctx_stack else _ctx[0])
         _instrument_module(module)
     def __getattr__(self, item):
         return getattr(self.inner, item)
@@ -195,6 +203,15 @@ def _ppe_init(self, *args, **kwargs):
 if _MAIN:
     _cf.ProcessPoolExecutor.submit = _submit
     _cf.ProcessPoolExecutor.__init__ = _ppe_init
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_make_collect_report(collector):
+    if isinstance(collector, pytest.Module):
+        _switch("collect:" + collector.nodeid)
+        yield
+        _switch("collect")
+    else:
+        yield
 
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_setup(item):
