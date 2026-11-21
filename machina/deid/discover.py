@@ -19,7 +19,7 @@ VENDOR_ORG = re.compile(r"solidworks|dassault|autodesk|microsoft|siemens|ptc|spa
                         r"freecad|onshape|kubotek|tech soft|datakit|theorem|ugs|catia|parasolid|"
                         r"rhino|mcneel|creo|inventor|fusion", re.I)
 COMMON_EMAIL_DOMAINS = {"gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "qq.com", "163.com",
-                        "icloud.com", "live.com", "users.noreply.github.com", "example.com", "example.org"}
+                        "icloud.com", "live.com", "users.noreply.github.com", "github.com", "gitlab.com", "example.com", "example.org"}
 
 USER_PATH_A = re.compile(rb"(?:[A-Za-z]:[\\/]+(?:Users|Documents and Settings)[\\/]+|/Users/|/home/)"
                          rb"([^\\/:*?\"<>|\x00-\x1f]{2,40})[\\/]", re.I)
@@ -191,7 +191,7 @@ def _from_archive(data: bytes, kind: str, depth: int = 0) -> list[tuple[str, str
 
 
 def context_only(value: str, kind: str) -> bool:
-    """Plain words (an account called "spec", a company field "Rope") are replaced only
+    """Plain words (an account or company field that is an ordinary word) are replaced only
     in unambiguous contexts (paths, URLs, @mentions), never as ordinary words."""
     v = value.strip()
     if kind in ("account", "person-or-org") and v.isalpha() and len(v) <= 6:

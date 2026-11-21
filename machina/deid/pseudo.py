@@ -100,7 +100,7 @@ class Registry:
         taken = {v["pseudo"] for v in self.items.values()}
         self.items[low] = {"pseudo": make_pseudonym(self.key, low, taken), "kinds": [kind], "first_source": source}
         if context_only:
-            # a plain word (e.g. an account called "spec"): replaced only where it is
+            # a plain word (an account named like an ordinary word): replaced only where it is
             # unambiguously the identity, never as an ordinary word in content
             self.items[low]["context_only"] = True
         self._rx = None
