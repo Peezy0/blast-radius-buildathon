@@ -23,7 +23,7 @@ if [ -n "${BACKUP:-}" ] && [ -f "$BACKUP/secret.key" ] && [ ! -f "$PRIVATE/secre
   cp -a "$BACKUP"/. "$PRIVATE"/   # resume after the container was replaced
 fi
 
-if [ "${SKIP_PASS1:-0}" != 1 ]; then
+if [ "${SKIP_PASS1:-0}" != 1 ] && [ "${SINGLE_PASS:-0}" != 1 ]; then
   for b in "$WORK"/batches/*.tsv; do
     name=$(basename "$b" .tsv)
     [ -f "$PRIVATE/discovered-$name" ] && continue
@@ -40,6 +40,15 @@ for b in "$WORK"/batches/*.tsv; do
   name=$(basename "$b" .tsv)
   [ -f "$PRIVATE/done-$name" ] && continue
   python3 "$HERE/scripts/fetch_batch.py" --batch "$b" --dest "$WORK/in"
+  if [ "${SINGLE_PASS:-0}" = 1 ]; then
+    # Fast mode: discover this batch, then apply. Pseudonyms are deterministic, so a
+    # name first found in a later batch is never inconsistent, only missed earlier.
+    run discover --private "$PRIVATE" --input "$WORK/in" --jobs "$JOBS"
+    backup
+  fi
+  if [ -z "${DEST:-}" ] && [ -d "$WORK/corpus" ] && [ "${KEEP_LOCAL:-0}" != 1 ]; then
+    echo "no DEST: stopping before $name so finished output is not deleted un-uploaded"; exit 3
+  fi
   run apply --private "$PRIVATE" --input "$WORK/in" --output "$WORK/corpus" --jobs "$JOBS"
   cp "$PRIVATE/apply-report.json" "$PRIVATE/apply-report-$name.json"
   run verify --private "$PRIVATE" --output "$WORK/corpus"
@@ -50,7 +59,8 @@ for b in "$WORK"/batches/*.tsv; do
     MACHINA_UPLOAD_TOKEN="$(tr -d '[:space:]' < "$TOKEN_FILE")" \
       python3 "$WORK/upload.py" --dest "$DEST" --corpus "$WORK/corpus" --token-file "$TOKEN_FILE"
   fi
-  rm -rf "$WORK/in" "$WORK/corpus"
+  rm -rf "$WORK/in"
+  if [ -n "${DEST:-}" ]; then rm -rf "$WORK/corpus"; fi   # keep output until it is uploaded
   touch "$PRIVATE/done-$name"
   backup
 done
