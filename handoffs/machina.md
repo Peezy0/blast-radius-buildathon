@@ -147,3 +147,16 @@
 - Evidence: all 7 archives (2,059 members) list with `rarfile` 4.2 before and after; 58 stored members read
   back with CRC check, 0 failures; 0 identity hits left in headers or index. Gates: sample 0/0/0, 300-file 0/0/0;
   14 tests pass. README notes updated.
+
+## Update 2026-11-21 ~15:25 UTC (Claude)
+
+- Measured on a new random 400-file sample across the whole corpus (seed 21, files < 3 MB): 0 known
+  leftovers, 0 structure problems, but a residual-pattern scan found Windows profile-path account names
+  that discovery had missed: numeric accounts (rejected by the 'not all digits' rule) and accounts in raw
+  binary files (Creo etc., which discovery skipped).
+- Fix: `discover.user_paths()` (anchored profile-path rule, ASCII + UTF-16) now also runs on binary files and
+  accepts numeric accounts of 4+ digits; apply learns such names on the fly as context-only identities (keyed
+  pseudonyms, so every worker derives the same one) — no re-scan of the corpus needed.
+- After: residual scan shows only pseudonyms, generic accounts and one 3-letter account (below the 4-char
+  minimum). The single unreadable PDF in that sample is unreadable in the source too. Gates: sample 0/0/0,
+  300-file 0/0/0; 14 tests pass.

@@ -11,7 +11,7 @@ import zipfile
 import zlib
 from dataclasses import dataclass, field
 
-from . import deflatefit, swfile
+from . import deflatefit, discover, swfile
 from .formats import classify
 from .pseudo import Registry
 
@@ -23,6 +23,14 @@ class Result:
     notes: list = field(default_factory=list)
 
 
+def _learn(reg: Registry, blob: bytes) -> None:
+    """Profile-path account names not seen during discovery (e.g. in a file type the scan
+    skipped) are added on the fly as context-only identities. Pseudonyms are keyed, so every
+    worker derives the same one."""
+    for n in discover.user_paths(blob):
+        reg.add(n, "os-user", "apply", context_only=True)
+
+
 def _sw_transform(reg: Registry, res: Result, depth: int):
     def t(raw: bytes) -> bytes:
         if depth < 4 and swfile.is_swx(raw):
@@ -30,6 +38,7 @@ def _sw_transform(reg: Registry, res: Result, depth: int):
             if rep.unfit:
                 res.notes.append(f"nested-unfit:{rep.unfit}")
             return new
+        _learn(reg, raw)
         return reg.sub_bytes(raw, texty=True)  # sections also hold binary geometry
     return t
 
@@ -135,6 +144,7 @@ def _pdf(data: bytes, reg: Registry, res: Result, rewrite: bool = True) -> bytes
         if not d.eof:
             continue
         used = len(chunk) - len(d.unused_data)
+        _learn(reg, raw)
         new = reg.sub_bytes(raw)
         if new == raw:
             continue
@@ -378,6 +388,8 @@ def process_bytes(data: bytes, name: str, reg: Registry, res: Result | None = No
     if top:
         res = Result(kind)
     try:
+        if kind in ("text", "binary", "ole", "pdf"):
+            _learn(reg, data)
         if kind == "empty":
             new = data
         elif data.startswith(RAR5_SIG):

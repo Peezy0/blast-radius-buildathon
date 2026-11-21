@@ -88,6 +88,31 @@ def _ok(v: str) -> bool:
     return len(v) >= 4 and v.lower() not in GENERIC and not VENDOR_ORG.search(v) and not v.isdigit()
 
 
+def _ok_user(v: str) -> bool:
+    """Account names in profile paths: the usual rules, plus numeric accounts (e.g. a student
+    or employee number) of 4+ digits, which are identifying in that position."""
+    v = _clean(v)
+    if v.isdigit():
+        return len(v) >= 4 and len(set(v)) >= 3
+    return _ok(v)
+
+
+def user_paths(blob: bytes) -> list[str]:
+    """Account names in Windows/macOS/Linux profile paths, ASCII and UTF-16LE. Strongly
+    anchored, so safe on binary data too."""
+    out = []
+    texts = [blob]
+    u = b"".join(m.group(0)[::2] + b"\n" for m in U16.finditer(blob))
+    if u:
+        texts.append(u)
+    for t in texts:
+        for m in USER_PATH_A.finditer(t):
+            name = m.group(1).decode("latin-1").strip().replace("%20", " ")
+            if _ok_user(name) and "~" not in name and "." not in name:
+                out.append(name)
+    return out
+
+
 def from_path(relpath: str) -> list[tuple[str, str]]:
     """Repository owners encoded as sources/<host>/<owner>__<repo>[__<sha>]/ and archives/<owner>__<repo>."""
     out = []
@@ -110,11 +135,8 @@ def from_text(blob: bytes) -> list[tuple[str, str]]:
     u = b"".join(m.group(0)[::2] + b"\n" for m in U16.finditer(blob))
     if u:
         texts.append(u)
+    found += [(n, "os-user") for n in user_paths(blob)]
     for t in texts:
-        for m in USER_PATH_A.finditer(t):
-            name = m.group(1).decode("latin-1").strip().replace("%20", " ")
-            if _ok(name) and "~" not in name and "." not in name:
-                found.append((name, "os-user"))
         for m in EMAIL_A.finditer(t):
             e = m.group(0).decode("latin-1")
             if not _email_ok(e):
@@ -173,7 +195,8 @@ def from_file(data: bytes, kind: str) -> list[tuple[str, str]]:
     if kind in ("zip", "7z", "gzip", "tar"):
         return _from_archive(data, kind)
     if kind == "binary":
-        return []  # raw binary (STL, DWG, JT, ...) gave only random-looking matches
+        # raw binary (STL, DWG, JT, Creo, ...): only anchored profile paths; other rules gave noise
+        return [(n, "os-user") for n in user_paths(data)]
     if kind in ("ole", "pdf"):
         out = from_text(data)
         if kind == "ole":
