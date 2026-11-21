@@ -60,6 +60,8 @@ for b in "$WORK"/batches/*.tsv; do
   if [ -n "${DEST:-}" ]; then
     # Token comes from a file (never argv, chat or git); upload.py re-reads it when it expires.
     [ -n "${TOKEN_FILE:-}" ] || { echo "set TOKEN_FILE to a 0600 file holding the upload token" >&2; exit 2; }
+    # Clean ahead while the token is not there yet: wait for a non-empty token file before uploading.
+    until [ -s "$TOKEN_FILE" ]; do echo "waiting for token file before uploading $name"; sleep 30; done
     MACHINA_UPLOAD_TOKEN="$(tr -d '[:space:]' < "$TOKEN_FILE")" \
       python3 "$WORK/upload.py" --dest "$DEST" --corpus "$WORK/corpus" --token-file "$TOKEN_FILE"
   fi
