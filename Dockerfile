@@ -4,5 +4,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 WORKDIR /app
 COPY selector.py /app/selector.py
 COPY src /app/src
+COPY data/map.json.gz /app/data/map.json.gz
 USER 65534:65534
-CMD ["python", "/app/selector.py"]
+CMD ["python", "/app/selector.py", "--map", "/app/data/map.json.gz"]

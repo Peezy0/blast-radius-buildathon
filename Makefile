@@ -15,7 +15,7 @@ test:
 	$(PYTHON) -m unittest discover -s tests -v
 
 sample-local:
-	$(PYTHON) selector.py --data-dir official/sample > $(OUTPUT)
+	$(PYTHON) selector.py --data-dir official/sample --map data/map.json.gz > $(OUTPUT)
 	$(PYTHON) official/score.py official/sample official/sample/answers.json $(OUTPUT)
 
 build:

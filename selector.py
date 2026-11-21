@@ -14,6 +14,7 @@ from pathlib import Path
 import sys
 
 from src.impact import choose_tests
+from src import covselect
 from src.scheduling import optimize
 
 
@@ -40,6 +41,24 @@ def load_json(path: Path):
         parse_constant=_reject_constant,
         object_pairs_hook=_unique_object,
     )
+
+
+def load_map(path: Path):
+    import gzip
+    with gzip.open(path, "rt", encoding="utf-8") as handle:
+        cmap = json.load(handle)
+    if cmap.get("version") != 2 or cmap.get("baseline_commit") != covselect_baseline():
+        raise ValueError("incompatible coverage map")
+    return cmap
+
+
+def covselect_baseline() -> str:
+    from src.impact import BASELINE_COMMIT
+    return BASELINE_COMMIT
+
+
+def load_ids(path: Path) -> dict[str, int]:
+    return {t["id"]: t["number"] for t in load_json(path)["tests"]}
 
 
 def load_catalog(path: Path) -> dict[int, float]:
@@ -75,9 +94,14 @@ def load_catalog(path: Path) -> dict[int, float]:
     return durations
 
 
-def generate_output(data_dir: Path, coverage=None) -> tuple[bytes, dict]:
+def generate_output(data_dir: Path, coverage=None, cmap=None) -> tuple[bytes, dict]:
     """Validate inputs and prepare the entire bounded output before emitting it."""
     durations = load_catalog(data_dir / "tests.json")
+    if cmap is not None:
+        ids = load_ids(data_dir / "tests.json")
+        map_numbers = [ids.get(test_id) for test_id in cmap["tests"]]
+        # catalog tests the map has never seen are always selected
+        unseen = frozenset(durations) - {n for n in map_numbers if n is not None}
     commit_dir = data_dir / "commits"
     if not commit_dir.is_dir():
         raise ValueError("data directory must contain a commits directory")
@@ -92,14 +116,23 @@ def generate_output(data_dir: Path, coverage=None) -> tuple[bytes, dict]:
             raise ValueError(f"patch is not a regular file: {patch.name}")
         # Default mode need not parse or read a patch to select the full suite.
         selected = all_tests
-        if coverage is not None:
+        if cmap is not None:
+            try:
+                chosen = covselect.select(patch.read_text(encoding="utf-8"), cmap)
+                selected = frozenset(
+                    map_numbers[i] for i in chosen if map_numbers[i] is not None
+                ) | unseen
+            except Exception as error:  # any doubt: run everything
+                print(f"selector: {patch.stem}: full suite ({type(error).__name__}: {error})", file=sys.stderr)
+                selected = all_tests
+        elif coverage is not None:
             selected = frozenset(
                 choose_tests(patch.read_text(encoding="utf-8"), all_tests, coverage)
             )
         if not selected <= all_tests:
             raise ValueError("coverage selected a test outside the current catalog")
         if selected not in cache:
-            cache[selected] = optimize(durations, selected)
+            cache[selected] = optimize(durations, selected) if selected else []
         workers = cache[selected]
         line = json.dumps(
             {"commit": patch.stem, "workers": workers},
@@ -126,10 +159,18 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, default=Path("/data"))
     parser.add_argument("--coverage", type=Path, default=None)
+    parser.add_argument("--map", type=Path, default=None,
+                        help="baseline coverage map (data/map.json.gz)")
     args = parser.parse_args(argv)
     try:
         coverage = load_json(args.coverage) if args.coverage else None
-        output, stats = generate_output(args.data_dir, coverage)
+        cmap = None
+        if args.map is not None:
+            try:
+                cmap = load_map(args.map)
+            except (OSError, ValueError, KeyError, EOFError) as error:
+                print(f"selector: map unavailable, running all tests: {error}", file=sys.stderr)
+        output, stats = generate_output(args.data_dir, coverage, cmap)
     except (OSError, ValueError, TypeError, KeyError, OverflowError) as error:
         print(f"selector: {error}", file=sys.stderr)
         return 2

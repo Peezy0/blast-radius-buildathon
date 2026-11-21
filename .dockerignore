@@ -3,3 +3,5 @@
 !selector.py
 !src/
 !src/*.py
+!data/
+!data/map.json.gz
