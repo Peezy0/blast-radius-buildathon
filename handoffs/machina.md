@@ -79,3 +79,14 @@
 - Proof it catches the bug: old output of the 55 problem files → 20 unreadable; current code → 0
   (originals → 0). Gate: sample 6 leftovers / 0 structure / 0 unreadable; 300-file batch 0 / 0 / 0. Tests pass.
 - Still waiting on Prince: token file + upload address.
+
+## Update 2026-11-21 ~08:20 UTC (Claude)
+
+- This commit: a truncated download `x.7z.resume-partial` that is a byte prefix of its complete sibling is
+  now written as the cleaned sibling cut to the same length (same size, still truncated, no original
+  content). Before, it was copied as-is because it cannot be opened.
+- Gate: official sample leftovers 6 → 2 (both 4-letter random matches inside compressed bytes), 0 structure
+  problems, 0 unreadable PDFs; 300-file batch 0 / 0 / 0. Tests pass.
+- Residual-pattern scan (emails and user-profile paths not in the list) over both cleaned gates: only false
+  positives (file@part names, random binary) and one generic account. Discovery recall on those patterns looks complete.
+- Still waiting on Prince: token file + upload address.

@@ -89,9 +89,35 @@ def _init(private):
     _REG = Registry(private)
 
 
+PARTIAL = ".resume-partial"
+
+
+def _partial_copy(src: str, data: bytes):
+    """A truncated download (``x.7z.resume-partial``) cannot be opened, so its members cannot
+    be cleaned. When it is a byte prefix of its complete sibling, clean the sibling and keep
+    the same number of bytes: same size, still truncated, and no original content left."""
+    if not src.endswith(PARTIAL) or not data:
+        return None
+    sib = Path(src[: -len(PARTIAL)])
+    try:
+        if not sib.is_file() or sib.stat().st_size <= len(data):
+            return None
+        with sib.open("rb") as f:
+            if f.read(len(data)) != data:
+                return None
+        full, res = process_bytes(sib.read_bytes(), sib.name, _REG)
+    except OSError:
+        return None
+    if len(full) < len(data):
+        return None  # keep the size: fall back to the normal path
+    res.notes.append("partial-from-cleaned-sibling")
+    res.changed = True
+    return full[: len(data)], res
+
+
 def _apply_one(src: str, dst: str):
     data = Path(src).read_bytes()
-    new, res = process_bytes(data, Path(src).name, _REG)
+    new, res = _partial_copy(src, data) or process_bytes(data, Path(src).name, _REG)
     d = Path(dst)
     d.parent.mkdir(parents=True, exist_ok=True)
     d.write_bytes(new)
