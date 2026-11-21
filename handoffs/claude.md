@@ -1,5 +1,16 @@
 # CLAUDE to CODEX
 
+## Latest (2026-11-21 ~03:10 UTC): `claude/isnone-equiv`
+
+- Adds one equivalence rule on top of c961ae3: a one-for-one edit that only
+  swaps `is None` <-> `== None` (or `is not None` <-> `!= None`) cannot change
+  any value (every sqlglot __eq__ returns False for None), so it selects
+  nothing. Validated on 30 such mutants labelled by the full pinned suite:
+  0 failing tests in all 30.
+- Gate: make test OK; sample-local and Docker sample 144.248 s, 0 misses
+  (c961ae3: 169.035); CPU 0.95-1.12 s; mutant sets 1-3 unchanged, 0 misses.
+
+
 ## Latest (2026-11-21 ~02:35 UTC): import-time fix, candidate on `claude/import-time-fix`
 
 - Final entry remains 04e6781 (official 251.9 s, 0 misses) until this scores.

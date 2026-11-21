@@ -396,6 +396,41 @@ def _diff_path(a, b):
     return None if a == b else []
 
 
+_NONE_EQUIV = {(ast.Is, ast.Eq), (ast.Eq, ast.Is), (ast.IsNot, ast.NotEq), (ast.NotEq, ast.IsNot)}
+
+
+def _is_none_equivalent(old_st, new_st):
+    """`x is None` <-> `x == None` (and the negations): every class in sqlglot
+    that defines __eq__ returns False for None, and builtins do too, so the
+    rewrite cannot change any value. Only exactly that edit qualifies."""
+    if old_st is None or new_st is None:
+        return False
+    path = _diff_path(old_st[2], new_st[2])
+    if not path or not isinstance(path[-1], ast.Compare):
+        return False
+    old = path[-1]
+    new = None
+    for n in ast.walk(new_st[2]):
+        if isinstance(n, ast.Compare) and ast.dump(n.left) == ast.dump(old.left) and len(n.ops) == len(old.ops) \
+                and [ast.dump(c) for c in n.comparators] == [ast.dump(c) for c in old.comparators]:
+            new = n
+            break
+    if new is None:
+        return False
+    operands = [old.left] + list(old.comparators)
+    changed = False
+    for i, (a, b) in enumerate(zip(old.ops, new.ops)):
+        if type(a) is type(b):
+            continue
+        if (type(a), type(b)) not in _NONE_EQUIV:
+            return False
+        l, r = operands[i], operands[i + 1]
+        if not any(isinstance(x, ast.Constant) and x.value is None for x in (l, r)):
+            return False
+        changed = True
+    return changed
+
+
 def _lambda_body_change(old_st, new_st):
     """If the only difference between two statements is inside one lambda's
     body (not its arguments), return that lambda node of the old tree."""
@@ -444,6 +479,8 @@ def select_file(rec, hunks):
                 continue
             # one-for-one line replacement: the old statement rule covers it,
             # narrowed to a lambda's executions when only its body changed
+            if _is_none_equivalent(oidx.stmt(paired), nidx.stmt(new_line)):
+                continue
             lam = _lambda_body_change(oidx.stmt(paired), nidx.stmt(new_line))
             if lam is not None:
                 # a one-line lambda's line also runs when it is defined, so only

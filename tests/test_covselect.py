@@ -110,6 +110,14 @@ class CovSelectTests(unittest.TestCase):
         self.map["files"]["pkg/box.py"]["import_lines"] = [21]
         self.assertEqual(self.sel(SRC.replace("return v", "return -v")), {0, 1, 2, 3, 5})
 
+    def test_is_none_to_eq_none_is_equivalent(self):
+        src2 = SRC.replace("if n > LIMIT:", "if n is not None:")
+        self.map["files"]["pkg/box.py"]["source"] = src2
+        p = patch(src2, src2.replace("if n is not None:", "if n != None:"))
+        self.assertEqual(select(p, self.map), set())
+        p = patch(src2, src2.replace("if n is not None:", "if n is None:"))
+        self.assertEqual(select(p, self.map), {0, 1})
+
     def test_fixture(self):
         p = patch("SELECT 1;\n", "SELECT 2;\n", "tests/fixtures/f.sql")
         self.assertEqual(select(p, self.map), {4})
