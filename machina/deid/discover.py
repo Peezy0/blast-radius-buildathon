@@ -229,10 +229,22 @@ def _from_archive(data: bytes, kind: str, depth: int = 0) -> list[tuple[str, str
     return out
 
 
+# Ordinary words seen as account/person values: replacing them everywhere would hit
+# engineering text and file syntax (e.g. the PDF key /First), so context forms only.
+COMMON_WORDS = {
+    "first", "last", "cover", "delete", "editor", "education", "honor", "operator", "portable",
+    "rope", "scanning", "student", "think", "toolbox", "charger", "articles", "sponsors",
+    "carefree", "barefoot", "length", "filter", "width", "height", "title", "author",
+    "subject", "creator", "producer", "pages", "image", "font", "annots", "parent",
+}
+
+
 def context_only(value: str, kind: str) -> bool:
     """Plain words (an account or company field that is an ordinary word) are replaced only
     in unambiguous contexts (paths, URLs, @mentions), never as ordinary words."""
     v = value.strip()
+    if v.lower() in COMMON_WORDS:
+        return True
     if kind in ("account", "person-or-org") and v.isalpha() and len(v) <= 6:
         return True
     if kind == "os-user":

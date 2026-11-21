@@ -58,6 +58,10 @@ def _prefix(m: int) -> bytes:
 PREFIXES: dict[int, bytes] = {}
 for _m in range(0, 9):
     PREFIXES.setdefault(len(_prefix(_m)), _prefix(_m))
+for _a in list(PREFIXES.values()):  # pairs reach the residue 3 mod 5 (e.g. 6 + 7 = 13)
+    for _b in list(PREFIXES.values()):
+        PREFIXES.setdefault(len(_a) + len(_b), _a + _b)
+PREFIXES = dict(sorted(PREFIXES.items()))
 
 
 def _lead(r: int) -> bytes | None:
@@ -117,7 +121,8 @@ def fit(raw: bytes, target: int) -> bytes | None:
     if got is not None:
         return got
     # Hopeless when even zlib -9 is far above the target: skip the expensive search.
-    if len(zlib.compress(raw, 9)) - 6 > target + 64:
+    # zopfli can beat zlib -9 by 10-15 %, so leave that much room.
+    if len(zlib.compress(raw, 9)) - 6 > target * 1.2 + 64:
         return None
     # Small sections: prepend empty blocks to a finished stream. Empty stored blocks
     # add 5 bytes each; m empty fixed blocks add 10*m bits, applied by shifting the

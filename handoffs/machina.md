@@ -57,3 +57,17 @@
   the truncated `.7z.resume-partial` source copy, which cannot be opened (source defect). 300-file batch 0 / 0.
   11 unit tests pass (new: small-slack fit test).
 - Still waiting on Prince: token file + upload address. Then: re-clean 000–001, clean + upload 002–010.
+
+## Update 2026-11-21 ~06:50 UTC (Claude)
+
+- Found a pre-existing bug: a few ordinary words were in the identity list as plain matches (one was a
+  person value equal to the PDF key `/First`). Replacing it broke object streams: 20 of 36 tested PDFs from
+  batches 000–001 no longer opened in pypdf. Fix: `discover.COMMON_WORDS` makes such words context-only;
+  the private map was re-pruned with the same key (backup kept). Result: 0 of 36 broken.
+  Batches 000–001 local output predates this and will be re-cleaned before upload (already planned).
+- Fitter: byte-aligned prefix pairs reach every residue mod 5; the "hopeless" shortcut leaves 20 % room
+  for zopfli. On the 55 batch 000–001 files with unfit sections: SolidWorks unfit 0 (was ~30),
+  PDF streams 69 → 7.
+- Gate: official sample 6 leftovers (all in the unreadable truncated `.7z` copy), 0 structure problems;
+  300-file batch 0 / 0; 12 unit tests pass.
+- Still waiting on Prince: token file + upload address.

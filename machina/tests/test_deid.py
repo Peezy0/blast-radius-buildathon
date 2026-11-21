@@ -87,6 +87,15 @@ class T(unittest.TestCase):
             self.assertEqual(len(got), target)
             self.assertTrue(deflatefit._verify(got, raw))
 
+    def test_common_words_keep_pdf_syntax(self):
+        self.reg.add("First", "person", context_only=discover.context_only("First", "person"))
+        self.assertTrue(discover.context_only("First", "person"))
+        pdf = b"%PDF-1.5\n1 0 obj <</Type/ObjStm/First 34/Length 9/Author (alice)>>\n"
+        out, _ = process_bytes(pdf, "a.pdf", self.reg)
+        self.assertIn(b"/First 34/Length 9", out)
+        self.assertNotIn(b"alice", out)
+        self.assertEqual(len(out), len(pdf))
+
     def test_swx_rewrite_in_place(self):
         core = (b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><cp:coreProperties xmlns:cp="http://'
                 b'schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/'
