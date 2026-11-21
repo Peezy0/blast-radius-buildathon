@@ -103,3 +103,15 @@
 - Gate (same verify for before/after): sample 2 leftovers (random bytes in the truncated 7z copy), 0 structure,
   0 unreadable PDFs; 300-file batch 0/0/0; 55 problem files 0 leftovers, 0 unreadable. Tests pass.
 - Still waiting on Prince: token file + upload address.
+
+## Update 2026-11-21 ~10:20 UTC (Claude)
+
+- Fixed a pre-existing geometry bug: in binary data (binary STL, OLE, binary SolidWorks sections, Creo and
+  other raw files) a random 4-letter ASCII match inside float/compressed bytes was replaced, changing vertex
+  coordinates. Measured on the 300-file batch: 3 of 101 binary STLs had changed triangle data; now 0.
+  Rule: single-byte hits in non-text data are replaced only when they sit in text (up to 3 neighbours each side
+  printable or NUL). UTF-16 hits (SolidWorks length-prefixed strings) are always replaced; checked that no real
+  SolidWorks string hit is skipped on the sample (only one random binary match is).
+- `verify` uses the same view. Gate: official sample 0 leftovers, 0 structure, 0 unreadable PDFs;
+  300-file batch 0/0/0. 12 unit tests pass.
+- Still waiting on Prince: token file + upload address.

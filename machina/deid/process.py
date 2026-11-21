@@ -30,7 +30,7 @@ def _sw_transform(reg: Registry, res: Result, depth: int):
             if rep.unfit:
                 res.notes.append(f"nested-unfit:{rep.unfit}")
             return new
-        return reg.sub_bytes(raw)
+        return reg.sub_bytes(raw, texty=True)  # sections also hold binary geometry
     return t
 
 
@@ -275,8 +275,8 @@ def process_bytes(data: bytes, name: str, reg: Registry, res: Result | None = No
             new = gzip.compress(process_bytes(inner, name[:-3], reg, res, depth + 1), mtime=0)
         elif kind == "tar" and depth < 6:
             new = _tar(data, reg, res, depth)
-        else:  # text, ole, binary
-            new = reg.sub_bytes(data)
+        else:  # text, ole, binary: in binary data only matches that sit in text
+            new = reg.sub_bytes(data, texty=kind != "text")
     except Exception as exc:  # corrupt, truncated or encrypted source
         res.notes.append(f"{kind}-error:{type(exc).__name__}")
         if kind == "zip":
@@ -284,7 +284,7 @@ def process_bytes(data: bytes, name: str, reg: Registry, res: Result | None = No
         elif kind in ("7z", "gzip"):
             new = data
         else:
-            new = reg.sub_bytes(data)
+            new = reg.sub_bytes(data, texty=kind != "text")
     if new != data:
         res.changed = True
     return (new, res) if top else new

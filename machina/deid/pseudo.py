@@ -162,7 +162,26 @@ class Registry:
         c = data[i]
         return 48 <= c <= 57 or 65 <= c <= 90 or 97 <= c <= 122
 
-    def _matches(self, data: bytes):
+    @staticmethod
+    def _texty(data: bytes, start: int, ln: int, width: int) -> bool:
+        """True when the hit sits in text: up to 3 characters on each side are printable or
+        NUL (C strings), at least one printable. Random matches in binary data (float
+        geometry, compressed bytes) fail this and are left alone."""
+        seen = 0
+        for i in list(range(start - 3 * width, start, width)) + list(range(start + ln, start + ln + 3 * width, width)):
+            if i < 0 or i + width > len(data):
+                seen += 1
+                continue
+            if width == 2 and data[i + 1] != 0:
+                return False
+            c = data[i]
+            if 32 <= c < 127 or c in (9, 10, 13):
+                seen += 1
+            elif c != 0:
+                return False
+        return seen > 0
+
+    def _matches(self, data: bytes, texty: bool = False):
         A = self._automaton()[0]
         if A is None or not data:
             return []
@@ -175,6 +194,8 @@ class Registry:
                 continue
             if pre + idlen == ln and self._alnum(data, end + 1, width):
                 continue
+            if texty and width == 1 and not self._texty(data, start + pre, idlen, width):  # UTF-16 hits are never random
+                continue
             hits.append((start + pre, idlen, width, ident))
         # keep longest, non-overlapping, leftmost
         hits.sort(key=lambda h: (h[0], -h[1]))
@@ -185,8 +206,8 @@ class Registry:
                 last = h[0] + h[1] - 1
         return out
 
-    def sub_bytes(self, data: bytes) -> bytes:
-        hits = self._matches(data)
+    def sub_bytes(self, data: bytes, texty: bool = False) -> bytes:
+        hits = self._matches(data, texty)
         if not hits:
             return data
         buf = bytearray(data)
@@ -196,5 +217,5 @@ class Registry:
             buf[start:start + ln] = self.pseudo_for(orig).encode(enc)
         return bytes(buf)
 
-    def count_bytes(self, data: bytes) -> int:
-        return len(self._matches(data))
+    def count_bytes(self, data: bytes, texty: bool = False) -> int:
+        return len(self._matches(data, texty))

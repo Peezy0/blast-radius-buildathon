@@ -165,7 +165,7 @@ def _hits(data, kind, name, reg, depth=0):
         if kind == "swx":
             n = 0
             for _nm, raw in swfile.iter_text(data):
-                n += _hits(raw, "swx", "", reg, depth + 1) if depth < 3 and swfile.is_swx(raw) else reg.count_bytes(raw)
+                n += _hits(raw, "swx", "", reg, depth + 1) if depth < 3 and swfile.is_swx(raw) else reg.count_bytes(raw, texty=True)
             return n
         if kind == "image":
             return _image_meta_hits(data, reg)
@@ -190,7 +190,7 @@ def _hits(data, kind, name, reg, depth=0):
             return n
     except Exception:
         pass  # unreadable archive (source defect): fall through to a raw count
-    return reg.count_bytes(data)
+    return reg.count_bytes(data, texty=kind != "text")  # same view as apply
 
 
 def _image_meta_hits(data, reg):
