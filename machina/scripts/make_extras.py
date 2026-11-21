@@ -58,6 +58,8 @@ EXPLAIN = {
     "zip-error": "source archive is encrypted or damaged; member names were pseudonymised in place, members could not be read",
     "7z-error": "source 7z archive is truncated, damaged or uses an unsupported method; kept as is",
     "gzip-error": "source gzip stream is damaged; kept as is",
+    "rar-compressed-members": "RAR5 archive: member names and stored members cleaned in place (CRCs updated); compressed members could not be rewritten (no RAR writer) and are unchanged",
+    "rar-bad-header": "RAR archive with a damaged header; cleaned up to that point",
     "partial-from-cleaned-sibling": "truncated download copy of a sibling archive; written as the cleaned sibling cut to the same length",
 }
 lines = [
@@ -88,7 +90,7 @@ lines = [
     "  No CAD application was available to open native files; checks are structural (SolidWorks section",
     "  CRC/central directory, zip CRC, PDF parse and page text, identical sizes for in-place edits).",
     "  Free-text names in drawing notes, part numbers and project names are not detected. Logos and",
-    "  other identifying pixels in images are not changed (image metadata is). RAR archives, DWG",
+    "  other identifying pixels in images are not changed (image metadata is). RAR5 archives keep their compressed member data (names, stored members and the quick-open index are cleaned); DWG",
     "  compressed sections and Creo/JT/Parasolid binary internals are only scanned as raw bytes.",
     "",
     "RUN SUMMARY",

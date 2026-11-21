@@ -250,6 +250,128 @@ def _7z(data: bytes, reg: Registry, res: Result, depth: int) -> bytes:
     return out.getvalue()
 
 
+RAR5_SIG = b"Rar!\x1a\x07\x01\x00"
+
+
+def _vint(b: bytes, i: int) -> tuple[int, int]:
+    v = sh = 0
+    while True:
+        c = b[i]
+        i += 1
+        v |= (c & 0x7F) << sh
+        sh += 7
+        if not c & 0x80:
+            return v, i
+
+
+def _rar5(data: bytes, reg: Registry, res: Result, depth: int) -> bytes:
+    """RAR5 in place (no RAR writer exists here): member names in file/service headers are
+    pseudonymised at equal length and each header CRC32 recomputed; stored (uncompressed)
+    members are cleaned at equal length and their data CRC32 updated. Compressed members
+    cannot be rewritten and are reported."""
+    buf = bytearray(data)
+    i, packed = 8, 0
+    while i + 7 < len(data):
+        crc = int.from_bytes(data[i:i + 4], "little")
+        hsize, j = _vint(data, i + 4)
+        hstart, hend = i + 4, j + hsize
+        if hend > len(data) or zlib.crc32(data[hstart:hend]) != crc:
+            res.notes.append("rar-bad-header")
+            break
+        htype, k = _vint(data, j)
+        hflags, k = _vint(data, k)
+        if hflags & 1:
+            _, k = _vint(data, k)
+        dsize = 0
+        if hflags & 2:
+            dsize, k = _vint(data, k)
+        if htype in (2, 3):  # file / service header
+            fflags, k = _vint(data, k)
+            usize, k = _vint(data, k)
+            _, k = _vint(data, k)  # attributes
+            if fflags & 2:
+                k += 4  # mtime
+            crc_pos = None
+            if fflags & 4:
+                crc_pos, k = k, k + 4
+            comp, k = _vint(data, k)
+            _, k = _vint(data, k)  # host OS
+            nlen, k = _vint(data, k)
+            name = data[k:k + nlen]
+            nn = reg.sub_bytes(name)
+            if nn != name:
+                buf[k:k + nlen] = nn
+            d0, d1 = hend, hend + dsize
+            if htype == 3 and name == b"QO" and dsize and (comp >> 7) & 7 == 0:
+                qo = _rar5_quick_open(data[d0:d1], reg)
+                if qo != data[d0:d1]:
+                    buf[d0:d1] = qo
+                    if crc_pos is not None:
+                        buf[crc_pos:crc_pos + 4] = zlib.crc32(qo).to_bytes(4, "little")
+            if dsize and fflags & 1 == 0 and htype == 2:
+                if (comp >> 7) & 7 == 0 and dsize == usize and not (hflags & 0x18):
+                    body = data[d0:d1]
+                    new = process_bytes(body, name.decode("utf-8", "replace"), reg, res, depth + 1)
+                    if len(new) != len(body):
+                        new = reg.sub_bytes(body, texty=True)
+                    if new != body:
+                        buf[d0:d1] = new
+                        if crc_pos is not None:
+                            buf[crc_pos:crc_pos + 4] = zlib.crc32(new).to_bytes(4, "little")
+                elif reg.count_bytes(name) == 0:
+                    packed += 1
+            if bytes(buf[hstart:hend]) != data[hstart:hend]:
+                buf[i:i + 4] = zlib.crc32(bytes(buf[hstart:hend])).to_bytes(4, "little")
+        if htype == 5:
+            break
+        i = hend + dsize
+    if packed:
+        res.notes.append(f"rar-compressed-members:{packed}")
+    return bytes(buf)
+
+
+def _rar5_quick_open(qo: bytes, reg: Registry) -> bytes:
+    """Quick-open records cache copies of the file headers (with names): clean each copy,
+    then fix its header CRC32 and the record CRC32."""
+    buf = bytearray(qo)
+    i = 0
+    try:
+        while i + 5 < len(qo):
+            rsize, j = _vint(qo, i + 4)
+            rend = j + rsize
+            if rend > len(qo) or zlib.crc32(qo[i + 4:rend]) != int.from_bytes(qo[i:i + 4], "little"):
+                return qo
+            _, k = _vint(qo, j)  # flags
+            _, k = _vint(qo, k)  # offset
+            dlen, k = _vint(qo, k)
+            h = k  # header copy: CRC32, size, type, flags, ..., name
+            hsize, a = _vint(qo, h + 4)
+            hend = a + hsize
+            t, b = _vint(qo, a)
+            hf, b = _vint(qo, b)
+            if hf & 1:
+                _, b = _vint(qo, b)
+            if hf & 2:
+                _, b = _vint(qo, b)
+            if t in (2, 3):
+                ff, b = _vint(qo, b)
+                _, b = _vint(qo, b)
+                _, b = _vint(qo, b)
+                b += (4 if ff & 2 else 0) + (4 if ff & 4 else 0)
+                _, b = _vint(qo, b)
+                _, b = _vint(qo, b)
+                nlen, b = _vint(qo, b)
+                nn = reg.sub_bytes(qo[b:b + nlen])
+                if nn != qo[b:b + nlen]:
+                    buf[b:b + nlen] = nn
+                    buf[h:h + 4] = zlib.crc32(bytes(buf[h + 4:hend])).to_bytes(4, "little")
+                    buf[i:i + 4] = zlib.crc32(bytes(buf[i + 4:rend])).to_bytes(4, "little")
+            i = rend
+    except IndexError:
+        return qo
+    return bytes(buf)
+
+
 def process_bytes(data: bytes, name: str, reg: Registry, res: Result | None = None, depth: int = 0) -> bytes:
     kind = classify(data[:8192], name, len(data))
     top = res is None
@@ -258,6 +380,9 @@ def process_bytes(data: bytes, name: str, reg: Registry, res: Result | None = No
     try:
         if kind == "empty":
             new = data
+        elif data.startswith(RAR5_SIG):
+            res.kind = kind = "rar"
+            new = _rar5(data, reg, res, depth)
         elif kind == "image":
             new = _image(data, reg)
         elif kind == "swx":

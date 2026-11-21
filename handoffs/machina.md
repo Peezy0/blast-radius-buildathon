@@ -137,3 +137,13 @@
 - Command when the token file and address exist (Codex submits the address afterwards):
   `WORK=/tmp/claude-0/mach/work PRIVATE=/tmp/claude-0/mach/private BACKUP=/mnt/project-files/machina-private
    MAXGB=8 SKIP_PASS1=1 DEST=<gs://…/attempt-1/> TOKEN_FILE=<file> bash scripts/full_run.sh`
+
+## Update 2026-11-21 ~14:25 UTC (Claude)
+
+- Found: the 7 RAR files (RAR5) were treated as plain binary, so cleaning names in their headers would break
+  the header CRC32s (one archive had 349 identity hits in headers + 89 in its quick-open index). New in-place
+  RAR5 handler: names in file/service headers and in quick-open records cleaned at equal length with every
+  CRC32 recomputed; stored members cleaned with data CRC updated; compressed members reported.
+- Evidence: all 7 archives (2,059 members) list with `rarfile` 4.2 before and after; 58 stored members read
+  back with CRC check, 0 failures; 0 identity hits left in headers or index. Gates: sample 0/0/0, 300-file 0/0/0;
+  14 tests pass. README notes updated.
