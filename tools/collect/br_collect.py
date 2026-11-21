@@ -49,7 +49,7 @@ sys.addaudithook(_audit)
 # is replaced by a non-data descriptor that records (defining class, name) in
 # the current context. Reads while any sqlglot module is executing (imports,
 # class creation, metaclass/__init_subclass__ work) are recorded as import-time.
-import importlib.abc, importlib.machinery, types as _t2
+import importlib.abc, importlib.machinery, types as _t2, enum
 _attr_reads = {}
 _instrumented = set()
 _CUR_INIT = None
@@ -67,6 +67,148 @@ class _AttrRec:
         else:
             _CUR[0].add(self.key)
         return self.value
+
+_dict_keys = {}   # attr key -> runtime key tokens, in insertion order
+
+def _key_token(k):
+    """Stable name for a dict key, matched against the source by covselect."""
+    if isinstance(k, enum.Enum):
+        return k.name  # matched against the last name in the source key
+    if isinstance(k, type):
+        return k.__name__
+    if k is None or type(k) in (str, int, float, bool, bytes):
+        return repr(k)
+    if type(k) is tuple:
+        parts = [_key_token(x) for x in k]
+        return None if None in parts else "(" + ", ".join(parts) + ("," if len(parts) == 1 else "") + ")"
+    return None
+
+class _RecDict(dict):
+    """Class-attribute dict that records which key's value each context reads.
+    Value reads of key K go to '<attr>\x00<token>'; whole-dict reads (items,
+    values, copies, comparisons, repr, pickling) go to '<attr>\x00*'. Key-only
+    operations (in, len, iteration over keys) record nothing: covselect only
+    uses these records when an edit keeps the dict's keys."""
+    __slots__ = ("_k", "_tm")
+    def _all(self):
+        if _import_depth[0]:
+            _import_reads.add(self._k + "\x00*")
+        else:
+            _CUR[0].add(self._k + "\x00*")
+    def _one(self, k):
+        try:
+            t = self._tm.get(k)
+        except TypeError:
+            return
+        if t is None:
+            if dict.__contains__(self, k):
+                self._all()  # key added at runtime: no source mapping
+            return
+        if _import_depth[0]:
+            _import_reads.add(t)
+        else:
+            _CUR[0].add(t)
+    def __getitem__(self, k):
+        self._one(k); return dict.__getitem__(self, k)
+    def get(self, k, *a):
+        self._one(k); return dict.get(self, k, *a)
+    def setdefault(self, k, *a):
+        self._one(k); return dict.setdefault(self, k, *a)
+    def pop(self, k, *a):
+        self._one(k); return dict.pop(self, k, *a)
+    def __iter__(self):
+        # a Python-level __iter__ also makes dict(d), {**d}, f(**d) and update(d)
+        # go through keys() + __getitem__ instead of copying storage directly
+        return dict.__iter__(self)
+    def items(self):
+        self._all(); return dict.items(self)
+    def values(self):
+        self._all(); return dict.values(self)
+    def popitem(self):
+        self._all(); return dict.popitem(self)
+    def copy(self):
+        self._all(); return dict(dict.items(self))
+    def __eq__(self, o):
+        self._all(); return dict.__eq__(self, o)
+    def __ne__(self, o):
+        self._all(); return dict.__ne__(self, o)
+    __hash__ = None
+    def __repr__(self):
+        self._all(); return dict.__repr__(self)
+    def __or__(self, o):
+        self._all(); return dict.__or__(self, o)
+    def __ror__(self, o):
+        self._all(); return dict.__ror__(self, o)
+    def __reduce_ex__(self, proto):
+        self._all(); return (dict, (dict(dict.items(self)),))
+    def __deepcopy__(self, memo):
+        import copy as _copy
+        self._all(); return _copy.deepcopy(dict(dict.items(self)), memo)
+    def __copy__(self):
+        self._all(); return dict(dict.items(self))
+
+def _rec_dict(key, v):
+    toks = [_key_token(k) for k in v]
+    d = _RecDict(v)
+    d._k = key
+    d._tm = {k: key + "\x00" + t for k, t in zip(v, toks) if t is not None}
+    _dict_keys[key] = toks
+    return d
+
+# Class-body dict literals are wrapped before the metaclass and
+# __init_subclass__ run, so class-creation reads are recorded too. Only dicts
+# referenced from the class namespace alone are wrapped (no aliasing changes).
+import builtins as _bi
+_orig_build_class = _bi.__build_class__
+
+def _calc_meta(meta, bases):
+    winner = meta
+    for b in bases:
+        bt = type(b)
+        if issubclass(winner, bt):
+            continue
+        if issubclass(bt, winner):
+            winner = bt; continue
+        return None
+    return winner
+
+def _probe_refs(ns):
+    for k, v in list(ns.items()):
+        return sys.getrefcount(v)
+_BASE_REFS = _probe_refs({"a": {}})
+
+def _wrap_ns(ns, mod):
+    qual = ns.get("__qualname__")
+    if not isinstance(qual, str):
+        return
+    for k, v in list(ns.items()):
+        if type(v) is dict and not k.startswith("__") and sys.getrefcount(v) <= _BASE_REFS:
+            ns[k] = _rec_dict(mod + ":" + qual + "." + k, v)
+
+class _MetaShim:
+    def __init__(self, meta, mod):
+        self.meta = meta; self.mod = mod
+    def __prepare__(self, name, bases, **kw):
+        return self.meta.__prepare__(name, bases, **kw)
+    def __call__(self, name, bases, ns, **kw):
+        _wrap_ns(ns, self.mod)
+        return self.meta(name, bases, ns, **kw)
+
+def _build_class(func, name, *bases, **kw):
+    mod = getattr(func, "__globals__", {}).get("__name__", "")
+    if not _import_depth[0] or not (mod == "sqlglot" or mod.startswith("sqlglot.")):
+        return _orig_build_class(func, name, *bases, **kw)
+    meta = kw.pop("metaclass", type)
+    try:
+        rb = _t2.resolve_bases(bases)
+        real = _calc_meta(meta, rb) if isinstance(meta, type) else None
+    except Exception:
+        real = None
+    if real is None or issubclass(real, enum.EnumMeta):
+        return _orig_build_class(func, name, *bases, metaclass=meta, **kw)
+    return _orig_build_class(func, name, *bases, metaclass=_MetaShim(real, mod), **kw)
+
+_bi.__build_class__ = _build_class
 
 _SKIP_TYPES = (_t2.FunctionType, classmethod, staticmethod, property, type,
                _t2.BuiltinFunctionType, _t2.MethodType)
@@ -179,7 +321,7 @@ def _flush_worker():
     with open(os.path.join(OUT, "worker-types-%s.json" % tag), "w") as f:
         json.dump(_types_out(), f)
     with open(os.path.join(OUT, "worker-attrs-%s.json" % tag), "w") as f:
-        json.dump({"reads": {k: sorted(v) for k, v in _attr_reads.items()}, "import": sorted(_import_reads), "instrumented": sorted(_instrumented)}, f)
+        json.dump({"reads": {k: sorted(v) for k, v in _attr_reads.items()}, "import": sorted(_import_reads), "instrumented": sorted(_instrumented), "dictkeys": _dict_keys}, f)
 
 def _run_in_ctx(ctx, fn, args, kwargs):
     """Executed in a worker: attribute the task to the test that submitted it."""
@@ -254,7 +396,7 @@ def pytest_sessionfinish(session, exitstatus):
     with open(os.path.join(OUT, "outcomes.json"), "w") as f:
         json.dump(_outcomes, f)
     with open(os.path.join(OUT, "attrs.json"), "w") as f:
-        json.dump({"reads": {k: sorted(v) for k, v in _attr_reads.items()}, "import": sorted(_import_reads), "instrumented": sorted(_instrumented)}, f)
+        json.dump({"reads": {k: sorted(v) for k, v in _attr_reads.items()}, "import": sorted(_import_reads), "instrumented": sorted(_instrumented), "dictkeys": _dict_keys}, f)
 
 def _types_out():
     out = {}

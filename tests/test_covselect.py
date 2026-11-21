@@ -118,6 +118,24 @@ class CovSelectTests(unittest.TestCase):
         p = patch(src2, src2.replace("if n is not None:", "if n is None:"))
         self.assertEqual(select(p, self.map), {0, 1})
 
+    def test_dict_value_change_uses_key_readers(self):
+        self.map["files"]["pkg/box.py"]["dictkeys"] = {
+            "Box": {"HOOKS": {"keys": ["'a'", "'b'"], "all": 6, "by": {"'a'": 2, "'b'": 3}}}}
+        src2 = SRC.replace("lambda x: x + 1", "(1, 2)").replace("lambda x: x * 2", "(3, 4)")
+        self.map["files"]["pkg/box.py"]["source"] = src2
+        self.assertEqual(select(patch(src2, src2.replace("(3, 4)", "(3, 5)")), self.map), {3})
+        self.assertEqual(select(patch(src2, src2.replace("(1, 2)", "(1, -2)")), self.map), {2})
+
+    def test_dict_value_change_needs_matching_keys(self):
+        self.map["files"]["pkg/box.py"]["dictkeys"] = {
+            "Box": {"HOOKS": {"keys": ["'a'", "'c'"], "all": 6, "by": {"'a'": 2, "'c'": 3}}}}
+        self.assertEqual(self.sel(SRC.replace('"b": lambda x: x * 2', '"b": lambda y: y * 2')), {0, 1, 5})
+
+    def test_dict_value_call_is_not_pure(self):
+        self.map["files"]["pkg/box.py"]["dictkeys"] = {
+            "Box": {"HOOKS": {"keys": ["'a'", "'b'"], "all": 6, "by": {"'a'": 2, "'b'": 3}}}}
+        self.assertEqual(self.sel(SRC.replace('"b": lambda x: x * 2', '"b": helper(2)')), {0, 1, 5})
+
     def test_fixture(self):
         p = patch("SELECT 1;\n", "SELECT 2;\n", "tests/fixtures/f.sql")
         self.assertEqual(select(p, self.map), {4})

@@ -447,6 +447,88 @@ def _lambda_body_change(old_st, new_st):
     return None
 
 
+_PURE = (ast.Constant, ast.Tuple, ast.List, ast.Set, ast.Dict, ast.Name, ast.Attribute,
+         ast.Load, ast.UnaryOp, ast.USub, ast.UAdd, ast.Not, ast.Invert, ast.BinOp,
+         ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow,
+         ast.BitOr, ast.BitAnd, ast.BitXor, ast.LShift, ast.RShift)
+
+
+def _pure_value(node):
+    """An expression whose evaluation at class creation only builds a value
+    (no calls), so a change can only be seen through the stored value."""
+    stack = [node]
+    while stack:
+        n = stack.pop()
+        if isinstance(n, ast.Lambda):
+            a = n.args
+            stack.extend(d for d in a.defaults + a.kw_defaults if d is not None)
+            continue
+        if not isinstance(n, _PURE):
+            return False
+        stack.extend(ast.iter_child_nodes(n))
+    return True
+
+
+def _key_candidates(k):
+    if isinstance(k, ast.Constant):
+        return {repr(k.value)}
+    if isinstance(k, ast.Tuple):
+        try:
+            return {repr(ast.literal_eval(k))}
+        except ValueError:
+            return set()
+    parts = []
+    n = k
+    while isinstance(n, ast.Attribute):
+        parts.append(n.attr); n = n.value
+    if not isinstance(n, ast.Name):
+        return set()
+    parts.append(n.id)
+    parts.reverse()
+    # runtime tokens: a class's __name__ or an enum member's name
+    return {parts[-1]}
+
+
+def _dict_value_tests(rec, oidx, nidx, old_line, new_line, attr_ok):
+    """Class-attribute dict literal whose keys are unchanged and whose changed
+    values are plain expressions: only tests that read those keys' values (or
+    the whole dict) can observe the edit. None when the rule does not apply."""
+    if not attr_ok:
+        return None
+    so, sn = oidx.stmt(old_line), nidx.stmt(new_line)
+    co, cn = oidx.container(old_line), nidx.container(new_line)
+    if not so or not sn or co is None or cn is None or co[2] != "class" or co[3] != cn[3]:
+        return None
+    o, n = so[2], sn[2]
+    names = _assigned_names(o)
+    if type(o) is not type(n) or not names or len(names) != 1 or names != _assigned_names(n):
+        return None
+    if isinstance(o, ast.AnnAssign) and ast.dump(o.annotation) != ast.dump(n.annotation):
+        return None
+    vo, vn = o.value, n.value
+    if not isinstance(vo, ast.Dict) or not isinstance(vn, ast.Dict) or len(vo.keys) != len(vn.keys):
+        return None
+    if any(k is None for k in vo.keys) or [ast.dump(k) for k in vo.keys] != [ast.dump(k) for k in vn.keys]:
+        return None
+    dk = ((rec.get("dictkeys") or {}).get(co[3]) or {}).get(names[0])
+    if not dk or len(dk["keys"]) != len(vo.keys):
+        return None
+    toks = dk["keys"]
+    if any(t not in _key_candidates(k) for t, k in zip(toks, vo.keys)):
+        return None
+    sets = rec["sets"]
+    out = set(sets[dk["all"]])
+    for t, a, b in zip(toks, vo.values, vn.values):
+        if ast.dump(a) != ast.dump(b):
+            if not (_pure_value(a) and _pure_value(b)):
+                return None
+            k = dk["by"].get(t)
+            if k is None:
+                return None  # value read while classes were created
+            out |= set(sets[k])
+    return out
+
+
 def select_file(rec, hunks):
     source = rec["source"]
     new_source, deleted, added = apply(source, hunks)
@@ -489,7 +571,8 @@ def select_file(rec, hunks):
                 if lam.end_lineno > lam.lineno:
                     out |= _import_extra(rec, lam.lineno + 1, lam.end_lineno)
             else:
-                out |= _old_line_tests(rec, oidx, paired, nidx, attr_ok)
+                dv = _dict_value_tests(rec, oidx, nidx, paired, new_line, attr_ok)
+                out |= dv if dv is not None else _old_line_tests(rec, oidx, paired, nidx, attr_ok)
             continue
         if _is_noop_line(new_lines[new_line - 1], new_line, new_spans):
             continue

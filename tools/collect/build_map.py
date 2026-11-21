@@ -199,6 +199,7 @@ def instantiators_of_module(rel):
 attr_reads = collections.defaultdict(set)
 import_keys = set()
 instrumented = set()
+dictkeys = {}
 attr_files = [os.path.join(cov_dir, "attrs.json")] + [
     os.path.join(cov_dir, f) for f in sorted(os.listdir(cov_dir)) if f.startswith("worker-attrs-")]
 have_attrs = os.path.exists(attr_files[0])
@@ -206,6 +207,7 @@ for fn in attr_files if have_attrs else []:
     d = json.load(open(fn))
     import_keys.update(d["import"])
     instrumented.update(d.get("instrumented", []))
+    dictkeys.update(d.get("dictkeys", {}))
     for ctx, keys in d["reads"].items():
         ts = ctx_tests(ctx)
         if ts is None:
@@ -256,6 +258,23 @@ def _definition_time_names(tree):
                 names.add(ch.attr)
             if isinstance(ch, ast.Name) and isinstance(ch.ctx, ast.Load) and not in_func:
                 names.add(ch.id)  # bare names in class bodies read earlier class attrs
+            walk(ch, in_func)
+    walk(tree, False)
+    return names
+
+def _bare_definition_names(tree):
+    """Bare names loaded at module/class-body level: in a class body they read
+    the namespace entry before the class (and its wrapped dicts) exist."""
+    names = set()
+    def walk(node, in_func):
+        for ch in ast.iter_child_nodes(node):
+            if isinstance(ch, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                for d in getattr(ch, "decorator_list", []):
+                    walk(d, in_func)
+                walk(ch.args, in_func)
+                continue
+            if isinstance(ch, ast.Name) and isinstance(ch.ctx, ast.Load) and not in_func:
+                names.add(ch.id)
             walk(ch, in_func)
     walk(tree, False)
     return names
@@ -369,9 +388,11 @@ for rel, src in files.items():
             set_ids[key] = len(sets); sets.append(list(key))
         return set_ids[key]
     attrs = None
+    dk = {}
     if have_attrs and rel.startswith("sqlglot/"):
         attrs = {}
         dt_names = _definition_time_names(ast.parse(src))
+        bare_names = _bare_definition_names(ast.parse(src))
         for q in classes.get(rel, {}):
             per = {}
             prefix = m + ":" + q + "."
@@ -380,6 +401,20 @@ for rel, src in files.items():
                 if "." in name or key in import_keys or name in STATIC_IMPORT_NAMES or name in dt_names:
                     continue
                 per[name] = sid(attr_reads.get(key, set()))
+            # class-body dict literals wrapped before class creation: per-key
+            # value readers (class-creation reads are recorded as import reads)
+            for key in [k for k in dictkeys if k.startswith(prefix)]:
+                name = key[len(prefix):]
+                toks = dictkeys[key]
+                if "." in name or name in bare_names or not toks or None in toks \
+                        or key + "\x00*" in import_keys:
+                    continue
+                dk.setdefault(q, {})[name] = {
+                    "keys": toks,
+                    "all": sid(attr_reads.get(key + "\x00*", set())),
+                    "by": {t: (None if key + "\x00" + t in import_keys else sid(attr_reads.get(key + "\x00" + t, set())))
+                           for t in set(toks)},
+                }
             if per:
                 attrs[q] = per
     out_files[rel] = {
@@ -389,6 +424,7 @@ for rel, src in files.items():
             for l, mods in sorted(import_mods_by_line.get(rel, {}).items())
         },
         "attrs": attrs,
+        "dictkeys": dk,
         "source": src,
         "lines": {str(l): sid(ts) for l, ts in sorted(by_line.items()) if ts},
         "module": sid(module_tests),
