@@ -96,6 +96,22 @@ class T(unittest.TestCase):
         self.assertNotIn(b"alice", out)
         self.assertEqual(len(out), len(pdf))
 
+    def test_binary_geometry_untouched(self):
+        # binary STL: an identity-like byte run inside float data must stay; header text is cleaned
+        tri = b"\x00\x00\x80\x3f" * 3 + b"\xd0\xa6\xc3alice\xc1\x01\x02" + b"\x00" * 23
+        stl = b"made by alice".ljust(80, b" ") + struct.pack("<I", 1) + tri
+        out, _ = process_bytes(stl, "m.stl", self.reg)
+        self.assertEqual(out[80:], stl[80:])
+        self.assertNotIn(b"alice", out[:80])
+
+    def test_pdf_filtered_stream_bytes_untouched(self):
+        img = b"\x91\x02alice\x88\x7f" * 4
+        pdf = (b"%PDF-1.4\n1 0 obj <</Filter/DCTDecode/Length 36>>stream\n" + img
+               + b"\nendstream endobj\n2 0 obj <</Author (alice)>> endobj\n")
+        out, _ = process_bytes(pdf, "a.pdf", self.reg)
+        self.assertIn(img, out)
+        self.assertNotIn(b"(alice)", out)
+
     def test_swx_rewrite_in_place(self):
         core = (b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><cp:coreProperties xmlns:cp="http://'
                 b'schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/'
