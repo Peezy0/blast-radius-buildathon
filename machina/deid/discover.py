@@ -13,9 +13,9 @@ GENERIC = {
     "localservice", "networkservice", "solidworks", "autodesk", "microsoft", "dassault", "siemens",
     "ptc", "onshape", "freecad", "open cascade", "opencascade", "kicad", "github", "gitlab", "main",
     "master", "china", "usa", "unknown author", "user name", "username", "your name", "company",
-    "organization", "organisation", "anonymous", "windows user", "pcbnew", "solid edge", "bureau", "etude", "engineer", "designer", "drawn", "checked", "approved", "name",
+    "organization", "organisation", "anonymous", "windows user", "pcbnew", "usuari", "usuario", "utilisateur", "benutzer", "utente", "solid edge", "bureau", "etude", "engineer", "designer", "drawn", "checked", "approved", "name",
 }
-VENDOR_ORG = re.compile(r"solidworks|dassault|autodesk|microsoft|siemens|ptc|spatial|open cascade|"
+VENDOR_ORG = re.compile(r"apache|kicad|stepup|autocad|sketchup|blender|openscad|librecad|solidworks|dassault|autodesk|microsoft|siemens|ptc|spatial|open cascade|"
                         r"freecad|onshape|kubotek|tech soft|datakit|theorem|ugs|catia|parasolid|"
                         r"rhino|mcneel|creo|inventor|fusion", re.I)
 COMMON_EMAIL_DOMAINS = {"gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "qq.com", "163.com",
@@ -45,6 +45,10 @@ def _email_ok(e: str) -> bool:
     if len(labels) >= 3 and labels[-1] == labels[-2]:
         return False  # "x.cn.cn"-style noise from binary data
     if sum(c.isalpha() for c in labels[-2]) < 3 or not local[:1].isalpha():
+        return False
+    if any(sum(c.isdigit() for c in lab) >= 2 and len(lab) >= 7 for lab in labels[:-1]):
+        return False  # random-looking labels from compressed data
+    if labels[0] == "www" and len(labels) == 2:
         return False
     if labels[-2:-1] == ["example"] or local.lower() in ("your.email", "you", "name", "email", "user"):
         return False
@@ -117,6 +121,8 @@ def from_text(blob: bytes) -> list[tuple[str, str]]:
                 continue
             found.append((e, "email"))
             dom = e.split("@", 1)[1].lower()
+            if dom.startswith("www."):
+                dom = dom[4:]
             if dom not in COMMON_EMAIL_DOMAINS and not VENDOR_ORG.search(dom):
                 found.append((dom, "domain"))
         for m in XML_PERSON.finditer(t):

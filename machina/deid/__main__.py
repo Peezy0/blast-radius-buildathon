@@ -71,7 +71,10 @@ def cmd_prune(a):
     kept = {}
     for low, v in reg.items.items():
         kinds = v.get("kinds", [])
-        if kinds == ["manifest-owner"] or disc._ok(low) or "account" in kinds:
+        if ("email" in kinds or "domain" in kinds) and not disc._email_ok(low if "@" in low else "x@" + low):
+            if not ({"account", "person", "person-or-org", "os-user"} & set(kinds)):
+                continue
+        if disc._ok(low) or "account" in kinds:
             v.pop("context_only", None)
             if all(disc.context_only(low, k) for k in kinds):
                 v["context_only"] = True
