@@ -27,6 +27,9 @@ def ctx_tests(ctx):
     """Tests a context is attributed to (setup/teardown fan out to the class)."""
     if ctx.startswith("collect|"):  # static context prefix added by coverage
         ctx = ctx[len("collect|"):]
+    if ctx.startswith("collect:"):
+        # importing/collecting a test module: a failure there fails every test in it
+        return set(members.get(ctx[len("collect:"):], set()))
     if "|" not in ctx:
         return None
     nodeid, phase = ctx.rsplit("|", 1)
@@ -45,6 +48,7 @@ data.read()
 lines_by_file = {}
 exec_by_file = collections.defaultdict(set)   # tests executing any line of file
 module_ctx_lines = collections.defaultdict(set)
+import_mods_by_line = collections.defaultdict(lambda: collections.defaultdict(set))
 for path in data.measured_files():
     rel = os.path.relpath(path, root)
     by_line = collections.defaultdict(set)
@@ -53,8 +57,13 @@ for path in data.measured_files():
             ts = ctx_tests(ctx)
             if ts is None:
                 module_ctx_lines[rel].add(line)
+                c2 = ctx[len("collect|"):] if ctx.startswith("collect|") else ctx
+                if c2.startswith("import:"):
+                    import_mods_by_line[rel][line].add(c2[len("import:"):])
                 continue
             by_line[line] |= ts
+            if ctx.startswith(("collect:", "collect|collect:")):
+                module_ctx_lines[rel].add(line)  # also runs before any test
     lines_by_file[rel] = by_line
 
 opens = json.load(open(os.path.join(cov_dir, "opens.json")))
@@ -84,7 +93,12 @@ M2F = mod_to_file()
 
 # Instantiation evidence: "module:qualname" -> tests
 inst = collections.defaultdict(set)
+import_inst = collections.defaultdict(set)  # "module:qualname" -> modules whose import created one
 for ctx, names in types_.items():
+    if ctx.startswith("import:"):
+        for n in names:
+            import_inst[n].add(ctx[len("import:"):])
+        continue
     ts = ctx_tests(ctx)
     if not ts:
         continue
@@ -99,6 +113,8 @@ for ctx, paths in opens.items():
     if not ts:
         continue
     for p in paths:
+        if ctx.startswith("collect:") and p.endswith(".py"):
+            continue  # importing a test module opens its (and helpers') source
         if p.endswith("/"):
             listers[p.rstrip("/") or "."] |= ts
         elif p.endswith(".py"):
@@ -245,15 +261,86 @@ def _definition_time_names(tree):
     return names
 
 SUBPROCESS_TESTS = {index[t] for t in index if t.endswith("::test_lazy_load")}
+def base_module_tests(rel):
+    mt = tests_executing(rel) | instantiators_of_module(rel)
+    for imp in importers.get(rel, ()):
+        mt |= instantiators_of_module(imp)
+        if imp.startswith("tests/"):
+            mt |= tests_executing(imp)
+    return mt
+BASE_MT = {rel: base_module_tests(rel) for rel in files}
+
+def _module_level_imports(tree, rel):
+    pkg = modname(rel).split(".")
+    if not rel.endswith("__init__.py"):
+        pkg = pkg[:-1]
+    found = set()
+    def walk(node):
+        for ch in ast.iter_child_nodes(node):
+            if isinstance(ch, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                continue
+            if isinstance(ch, ast.Import):
+                for a in ch.names:
+                    found.add(a.name)
+                    parts = a.name.split(".")
+                    for k in range(1, len(parts)):
+                        found.add(".".join(parts[:k]))
+            elif isinstance(ch, ast.ImportFrom):
+                if ch.level:
+                    b = ".".join(pkg[: len(pkg) - ch.level + 1])
+                    mname = b + ("." + ch.module if ch.module else "")
+                else:
+                    mname = ch.module or ""
+                found.add(mname)
+                parts = mname.split(".")
+                for k in range(1, len(parts)):
+                    found.add(".".join(parts[:k]))
+                for a in ch.names:
+                    found.add(mname + "." + a.name)
+            walk(ch)
+    walk(tree)
+    return found
+
+ML_IMPORTERS = collections.defaultdict(set)
+for _rel, _src in files.items():
+    try:
+        _tree = ast.parse(_src)
+    except SyntaxError:
+        continue
+    for _m in _module_level_imports(_tree, _rel):
+        _f = M2F.get(_m)
+        if _f and _f != _rel:
+            ML_IMPORTERS[_f].add(_rel)
+
+_FAIL_CACHE = {}
+def tests_if_import_fails(modname_):
+    """A module whose import breaks takes down every test that uses it,
+    including every module (and test file) that imports it at module level,
+    transitively."""
+    f = M2F.get(modname_)
+    if not f:
+        return set()
+    if f in _FAIL_CACHE:
+        return _FAIL_CACHE[f]
+    out = set(BASE_MT.get(f, set()))
+    seen, todo = {f}, [f]
+    while todo:
+        g = todo.pop()
+        for h in ML_IMPORTERS.get(g, ()):
+            if h in seen:
+                continue
+            seen.add(h); todo.append(h)
+            out |= instantiators_of_module(h)
+            if h.startswith("tests/"):
+                out |= members.get(h, set())
+    _FAIL_CACHE[f] = out
+    return out
+
 out_files = {}
 for rel, src in files.items():
     by_line = lines_by_file.get(rel, {})
     execd = tests_executing(rel)
-    module_tests = execd | instantiators_of_module(rel)
-    for imp in importers.get(rel, ()):
-        module_tests |= instantiators_of_module(imp)
-        if imp.startswith("tests/"):
-            module_tests |= tests_executing(imp)
+    module_tests = set(BASE_MT[rel])
     if rel.startswith("tests/"):
         module_tests |= members.get(rel, set())
     elif module_ctx_lines.get(rel):
@@ -272,6 +359,8 @@ for rel, src in files.items():
             s |= inst.get(m + ":" + ".".join(parts[:k]), set())
         if rel.startswith("tests/"):
             s |= members.get(rel + "::" + parts[0], set())
+        for mod in import_inst.get(m + ":" + q, ()):
+            s |= tests_if_import_fails(mod)
         class_tests[q] = s
     sets, set_ids = [], {}
     def sid(s):
@@ -294,6 +383,11 @@ for rel, src in files.items():
             if per:
                 attrs[q] = per
     out_files[rel] = {
+        "import_lines": sorted(module_ctx_lines.get(rel, ())),
+        "import_tests": {
+            str(l): sid(set().union(*(tests_if_import_fails(mm) for mm in mods)))
+            for l, mods in sorted(import_mods_by_line.get(rel, {}).items())
+        },
         "attrs": attrs,
         "source": src,
         "lines": {str(l): sid(ts) for l, ts in sorted(by_line.items()) if ts},

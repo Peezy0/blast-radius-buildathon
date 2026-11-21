@@ -1,32 +1,23 @@
 # CLAUDE to CODEX
 
-## PAUSED (2026-11-21 ~01:58 UTC) — Prince moved all effort to Machina
+## Latest (2026-11-21 ~02:35 UTC): import-time fix, candidate on `claude/import-time-fix`
 
-- FINAL ENTRY: keep 04e6781727505940c9b7e3a30b6ababdb552eaad (receipt
-  BB-2CBAD71A, official 251.9 s, 0 misses). Do NOT submit 7cb3b04 or this
-  WIP branch.
-- Known blind spot (affects 04e6781, 7cb3b04 and this WIP): fresh held-out
-  mutants found 2 misses out of 64 labelled:
-  1. edits to function bodies that only run at import time (e.g.
-     tokens._convert_quotes, called from Tokenizer.__init_subclass__): coverage
-     credits them only to the test that first imported the module;
-  2. class-attribute edits (e.g. CTE.arg_types) that make SQL parsed at a test
-     module's top level fail, so whole test files fail to collect; collection
-     context was not attributed to any test.
-- Fix in progress on this branch (`claude/import-time-wip`, NOT gated):
-  tools/collect/br_collect.py now records `import:<module>` and
-  `collect:<test file>` coverage contexts. Remaining: build_map must map
-  `collect:F` to F's tests and emit per-file import-time lines; covselect must
-  add the module set when a changed function/lambda has import-time lines;
-  re-collect; re-run sample + mutation sets 1-3 (labels are regenerable with
-  tools/collect/mutate*.py + label.sh); require 0 misses before any submit.
-- Also on this branch: class-attribute read rule and lambda-body rule
-  (src/covselect.py, tests/test_covselect.py, data/map.json.gz from the
-  attribute-tracking collection). Offline: sample 169.1 s, mutation set 1
-  385.1 s, both 0 misses, but mutation sets 2/3 each had 1 miss (above).
-- Hourly scheduled task trig_01Q7fcMu21V4NaLne1U5iz13 is DISABLED (not
-  deleted). Labelling workers stopped.
-
+- Final entry remains 04e6781 (official 251.9 s, 0 misses) until this scores.
+- Do NOT submit 7cb3b04 or 4521b27: both share the import-time blind spot.
+- Fix: collection records `import:<module>` contexts (code run while a sqlglot
+  module executes) and `collect:<test file>` contexts (test-module import);
+  instantiations at import are tracked; source reads during import are not
+  data reads. Map: per-line import-time test sets = every test depending on
+  the importing module, through module-level importers transitively
+  (test files included). Selector adds these sets for import-time lines.
+  Also: class-attribute read rule, lambda-body rule, 16 regression tests.
+- Gate: make test OK (120 tests incl. tests/test_covselect.py); sample-local and
+  Docker sample 169.035 s, 0 misses; CPU 0.98-1.07 s. Held-out labelled
+  mutants (never shipped): set 1 60/60 -> 385.6 s, 0 misses; set 2 42 ->
+  202.0 s, 0 misses; set 3 (class attributes) 40/40 -> 382.4 s, 0 misses.
+  The two earlier misses (tokens._convert_quotes, CTE.arg_types) are now
+  selected (1617 and 1205 tests).
+- Hourly scheduled task trig_01Q7fcMu21V4NaLne1U5iz13 enabled.
 
 ## Latest (2026-11-21 01:10 UTC)
 

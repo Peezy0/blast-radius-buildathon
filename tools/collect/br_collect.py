@@ -16,6 +16,9 @@ _opens = {}
 _outcomes = {}
 
 def _audit(event, args):
+    _d = globals().get("_import_depth")
+    if _d and _d[0]:
+        return  # reading module source while importing is not a data dependency
     if event == "open" and args and isinstance(args[0], (str, bytes, os.PathLike)):
         try:
             p = os.path.realpath(os.fsdecode(args[0]))
@@ -132,7 +135,8 @@ import enum, functools, types as _pytypes
 def _make_wrapper(orig):
     @functools.wraps(orig)
     def __init__(self, *a, **k):
-        _types.setdefault(_ctx[0], set()).add(type(self))
+        key = _import_ctx_stack[-1] if _import_ctx_stack else _ctx[0]
+        _types.setdefault(key, set()).add(type(self))
         return orig(self, *a, **k)
     __init__.__br_wrapped__ = True
     return __init__

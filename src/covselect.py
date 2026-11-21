@@ -207,6 +207,30 @@ def _lines_tests(rec, a, b):
     return out
 
 
+def _import_extra(rec, a, b):
+    """Tests affected through import-time execution of lines a..b: code run
+    while a module imports persists for every later test, and if it breaks,
+    that module's import fails for every test using it."""
+    il = rec.get("_import_set")
+    if il is None:
+        il = rec["_import_set"] = set(rec.get("import_lines") or ())
+    it = rec.get("import_tests")
+    sets = rec["sets"]
+    out = set()
+    for l in range(a, b + 1):
+        if l in il:
+            k = it.get(str(l)) if it is not None else None
+            if k is None:
+                out |= set(sets[rec["module"]])
+            else:
+                out.update(sets[k])
+    return out
+
+
+def _module_set(rec):
+    return set(rec["sets"][rec["module"]])
+
+
 def _container_tests(rec, idx, line, inner=None):
     """Tests for a change whose effect is at the level of the container of `line`."""
     sets = rec["sets"]
@@ -286,7 +310,7 @@ def _old_line_tests(rec, idx, line, nidx=None, attr_ok=False):
         and c is not None and c[4] is node
         and _same_def_signature_only(c, nidx)
     ):
-        return _lines_tests(rec, header_end + 1, end)
+        return _lines_tests(rec, header_end + 1, end) | _import_extra(rec, header_end + 1, end)
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and line <= header_end:
         # signature/decorator/base change: effect on the enclosing container + users
         parent = _parent_container(idx, c) if c is not None and c[4] is node else c
@@ -312,8 +336,10 @@ def _old_line_tests(rec, idx, line, nidx=None, attr_ok=False):
         return _container_tests(rec, idx, line, inner=c)
     # inside a function body
     if line <= header_end or not isinstance(getattr(node, "body", None), list):
-        return _lines_tests(rec, start, header_end if line <= header_end else end)
-    return _lines_tests(rec, start, end)
+        a, b = start, (header_end if line <= header_end else end)
+    else:
+        a, b = start, end
+    return _lines_tests(rec, a, b) | _import_extra(rec, a, b)
 
 
 def _scope_signature(tree):
@@ -420,7 +446,11 @@ def select_file(rec, hunks):
             # narrowed to a lambda's executions when only its body changed
             lam = _lambda_body_change(oidx.stmt(paired), nidx.stmt(new_line))
             if lam is not None:
+                # a one-line lambda's line also runs when it is defined, so only
+                # continuation lines can show import-time calls
                 out |= _lines_tests(rec, lam.lineno, lam.end_lineno)
+                if lam.end_lineno > lam.lineno:
+                    out |= _import_extra(rec, lam.lineno + 1, lam.end_lineno)
             else:
                 out |= _old_line_tests(rec, oidx, paired, nidx, attr_ok)
             continue
@@ -448,7 +478,10 @@ def select_file(rec, hunks):
             match = [o for o in oidx.containers if o[3] == q and o[2] == "def"]
             if not match:
                 raise Unknown("new function")
+            fn = match[0][4]
+            body_start = fn.body[0].lineno
             out |= _lines_tests(rec, match[0][0], match[0][1])
+            out |= _import_extra(rec, body_start, match[0][1])
     return out
 
 

@@ -106,6 +106,10 @@ class CovSelectTests(unittest.TestCase):
         new = SRC.replace("total = n\n", "totl = n\n")
         self.assertEqual(self.sel(new), {0, 1})
 
+    def test_import_time_function_widens_to_module(self):
+        self.map["files"]["pkg/box.py"]["import_lines"] = [21]
+        self.assertEqual(self.sel(SRC.replace("return v", "return -v")), {0, 1, 2, 3, 5})
+
     def test_fixture(self):
         p = patch("SELECT 1;\n", "SELECT 2;\n", "tests/fixtures/f.sql")
         self.assertEqual(select(p, self.map), {4})
