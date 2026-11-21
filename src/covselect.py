@@ -450,12 +450,15 @@ def _lambda_body_change(old_st, new_st):
 _PURE = (ast.Constant, ast.Tuple, ast.List, ast.Set, ast.Dict, ast.Name, ast.Attribute,
          ast.Load, ast.UnaryOp, ast.USub, ast.UAdd, ast.Not, ast.Invert, ast.BinOp,
          ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow,
-         ast.BitOr, ast.BitAnd, ast.BitXor, ast.LShift, ast.RShift)
+         ast.BitOr, ast.BitAnd, ast.BitXor, ast.LShift, ast.RShift,
+         # factory calls (rename_func(...), _show_parser(...)) run once at class
+         # creation and their result is only stored in the dict
+         ast.Call, ast.keyword)
 
 
 def _pure_value(node):
-    """An expression whose evaluation at class creation only builds a value
-    (no calls), so a change can only be seen through the stored value."""
+    """An expression whose evaluation at class creation only builds the stored
+    value (names, literals, operators, factory calls on plain arguments)."""
     stack = [node]
     while stack:
         n = stack.pop()
@@ -508,24 +511,35 @@ def _dict_value_tests(rec, oidx, nidx, old_line, new_line, attr_ok):
     vo, vn = o.value, n.value
     if not isinstance(vo, ast.Dict) or not isinstance(vn, ast.Dict) or len(vo.keys) != len(vn.keys):
         return None
-    if any(k is None for k in vo.keys) or [ast.dump(k) for k in vo.keys] != [ast.dump(k) for k in vn.keys]:
+    dump = lambda k: "**" if k is None else ast.dump(k)
+    if [dump(k) for k in vo.keys] != [dump(k) for k in vn.keys]:
         return None
     dk = ((rec.get("dictkeys") or {}).get(co[3]) or {}).get(names[0])
-    if not dk or len(dk["keys"]) != len(vo.keys):
+    if not dk:
         return None
-    toks = dk["keys"]
-    if any(t not in _key_candidates(k) for t, k in zip(toks, vo.keys)):
-        return None
+    rt = dk["keys"]
+    if all(k is not None for k in vo.keys):
+        # plain literal: runtime keys line up one-to-one with the source keys
+        if len(rt) != len(vo.keys) or any(t not in _key_candidates(k) for t, k in zip(rt, vo.keys)):
+            return None
+        toks = [{t} for t in rt]
+    else:
+        # with ** spreads the runtime order differs: match each explicit key by name
+        have = set(rt)
+        toks = [None if k is None else (_key_candidates(k) & have) for k in vo.keys]
+        if any(k is not None and not t for k, t in zip(vo.keys, toks)):
+            return None
     sets = rec["sets"]
     out = set(sets[dk["all"]])
-    for t, a, b in zip(toks, vo.values, vn.values):
+    for k, ts, a, b in zip(vo.keys, toks, vo.values, vn.values):
         if ast.dump(a) != ast.dump(b):
-            if not (_pure_value(a) and _pure_value(b)):
+            if k is None or not (_pure_value(a) and _pure_value(b)):
                 return None
-            k = dk["by"].get(t)
-            if k is None:
-                return None  # value read while classes were created
-            out |= set(sets[k])
+            for t in ts:
+                r = dk["by"].get(t)
+                if r is None:
+                    return None
+                out |= set(sets[r])
     return out
 
 

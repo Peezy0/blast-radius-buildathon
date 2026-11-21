@@ -131,7 +131,7 @@ class CovSelectTests(unittest.TestCase):
             "Box": {"HOOKS": {"keys": ["'a'", "'c'"], "all": 6, "by": {"'a'": 2, "'c'": 3}}}}
         self.assertEqual(self.sel(SRC.replace('"b": lambda x: x * 2', '"b": lambda y: y * 2')), {0, 1, 5})
 
-    def test_dict_value_call_is_not_pure(self):
+    def test_dict_value_with_scope_change_uses_class_rule(self):
         self.map["files"]["pkg/box.py"]["dictkeys"] = {
             "Box": {"HOOKS": {"keys": ["'a'", "'b'"], "all": 6, "by": {"'a'": 2, "'b'": 3}}}}
         self.assertEqual(self.sel(SRC.replace('"b": lambda x: x * 2', '"b": helper(2)')), {0, 1, 5})

@@ -276,15 +276,29 @@ def _bare_definition_names(tree):
                     walk(d, in_func)
                 walk(ch.args, in_func)
                 continue
-            if isinstance(ch, ast.Name) and isinstance(ch.ctx, ast.Load) and not in_func:
+            if isinstance(ch, ast.Name) and isinstance(ch.ctx, ast.Load) and not in_func \
+                    and not _keys_only_use(node, ch):
                 names.add(ch.id)
             walk(ch, in_func)
     walk(tree, False)
     return names
 
+def _keys_only_use(parent, name):
+    """A dict used only for its keys: iterated, tested with `in`, or len()."""
+    if isinstance(parent, (ast.comprehension, ast.For)) and parent.iter is name:
+        return True
+    if isinstance(parent, ast.Compare) and parent.left is not name and all(
+            isinstance(o, (ast.In, ast.NotIn)) for o in parent.ops):
+        return True
+    if isinstance(parent, ast.Call) and isinstance(parent.func, ast.Name) \
+            and parent.func.id in ("len", "set", "frozenset", "sorted", "list", "tuple") \
+            and len(parent.args) == 1 and parent.args[0] is name and not parent.keywords:
+        return True
+    return False
+
 # ---- class-body dict literals: per-key value readers, through copies ----
 _trees = {}
-def _tree(rel):
+def _src_tree(rel):
     if rel not in _trees:
         _trees[rel] = ast.parse(files[rel]) if rel in files else None
     return _trees[rel]
@@ -302,7 +316,7 @@ def _copy_target(site):
     except ValueError:
         return None
     rel = os.path.relpath(path, root)
-    tree = _tree(rel)
+    tree = _src_tree(rel)
     if tree is None:
         return None
     found = []
@@ -323,7 +337,29 @@ def _copy_target(site):
     if not (isinstance(st, ast.Assign) and len(st.targets) == 1 and isinstance(st.targets[0], ast.Name)
             and isinstance(st.value, ast.Dict)):
         return None
-    for k, v in zip(st.value.keys, st.value.values):
+    def copy_spread(v):
+        if isinstance(v, (ast.Name, ast.Attribute)):
+            return True
+        if isinstance(v, ast.DictComp) and len(v.generators) == 1:
+            g = v.generators[0]
+            return (isinstance(v.key, ast.Name) and isinstance(v.value, ast.Name) and not g.is_async
+                    and isinstance(g.target, ast.Tuple) and len(g.target.elts) == 2
+                    and all(isinstance(e, ast.Name) for e in g.target.elts)
+                    and g.target.elts[0].id == v.key.id and g.target.elts[1].id == v.value.id
+                    and v.key.id != v.value.id
+                    and isinstance(g.iter, ast.Call) and not g.iter.args and not g.iter.keywords
+                    and isinstance(g.iter.func, ast.Attribute) and g.iter.func.attr == "items"
+                    and not any(v.value.id in _names_in(c) for c in g.ifs))
+        return False
+    elems = list(zip(st.value.keys, st.value.values))
+    if line == st.lineno and elems and all(
+            (k.lineno if k is not None else v.lineno) > line for k, v in elems):
+        # dict-merge reads are reported on the display's first line
+        spreads = [v for k, v in elems if k is None]
+        if spreads and all(copy_spread(v) for v in spreads):
+            return modname(rel) + ":" + q + "." + st.targets[0].id
+        return None
+    for k, v in elems:
         if not (v.lineno <= line <= v.end_lineno):
             continue
         if k is not None:
@@ -356,7 +392,7 @@ def _dict_base_ok(dkey):
     if rel is None:
         return False
     if rel not in _bare_cache:
-        _bare_cache[rel] = _bare_definition_names(_tree(rel))
+        _bare_cache[rel] = _bare_definition_names(_src_tree(rel))
     return name not in _bare_cache[rel]
 
 _kr_memo = {}
