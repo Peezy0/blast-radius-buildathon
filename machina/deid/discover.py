@@ -13,7 +13,7 @@ GENERIC = {
     "localservice", "networkservice", "solidworks", "autodesk", "microsoft", "dassault", "siemens",
     "ptc", "onshape", "freecad", "open cascade", "opencascade", "kicad", "github", "gitlab", "main",
     "master", "china", "usa", "unknown author", "user name", "username", "your name", "company",
-    "organization", "organisation", "anonymous", "engineer", "designer", "drawn", "checked", "approved", "name",
+    "organization", "organisation", "anonymous", "windows user", "pcbnew", "solid edge", "bureau", "etude", "engineer", "designer", "drawn", "checked", "approved", "name",
 }
 VENDOR_ORG = re.compile(r"solidworks|dassault|autodesk|microsoft|siemens|ptc|spatial|open cascade|"
                         r"freecad|onshape|kubotek|tech soft|datakit|theorem|ugs|catia|parasolid|"
@@ -42,14 +42,45 @@ za eg ng ke il tr ir sa ae pk bd lk np tech xyz online site store cloud page ema
 def _email_ok(e: str) -> bool:
     local, _, dom = e.partition("@")
     labels = dom.lower().split(".")
+    if len(labels) >= 3 and labels[-1] == labels[-2]:
+        return False  # "x.cn.cn"-style noise from binary data
+    if sum(c.isalpha() for c in labels[-2]) < 3 or not local[:1].isalpha():
+        return False
     if labels[-2:-1] == ["example"] or local.lower() in ("your.email", "you", "name", "email", "user"):
         return False
     return (labels[-1] in TLDS and len(labels) >= 2 and sum(c.isalpha() for c in labels[-2]) >= 2
             and any(c.isalpha() for c in local))
 
 
+PRINTABLE = re.compile(r"^[\w .,'&@()+/-]+$", re.UNICODE)
+
+
+def _clean(v) -> str:
+    """Decode PDF/OLE strings and cut at the first control character."""
+    if isinstance(v, bytes):
+        if v.startswith(b"\xfe\xff"):
+            v = v[2:].decode("utf-16-be", "replace")
+        elif v.startswith(b"\xff\xfe"):
+            v = v[2:].decode("utf-16-le", "replace")
+        else:
+            try:
+                v = v.decode("utf-8")
+            except UnicodeDecodeError:
+                v = v.decode("latin-1")
+    if v.startswith("\xfe\xff"):
+        v = v[2:].encode("latin-1", "replace").decode("utf-16-be", "replace")
+    v = re.split(r"[\x00-\x1f\ufffd]", v, 1)[0]
+    return v.strip()
+
+
 def _ok(v: str) -> bool:
-    v = v.strip()
+    v = _clean(v)
+    if not PRINTABLE.match(v) or len(set(v.lower())) < 3:
+        return False
+    try:
+        v.encode("latin-1")
+    except UnicodeEncodeError:
+        return False  # cannot be matched byte-for-byte in v0; recorded as a gap
     return len(v) >= 4 and v.lower() not in GENERIC and not VENDOR_ORG.search(v) and not v.isdigit()
 
 
@@ -77,7 +108,7 @@ def from_text(blob: bytes) -> list[tuple[str, str]]:
         texts.append(u)
     for t in texts:
         for m in USER_PATH_A.finditer(t):
-            name = m.group(1).decode("latin-1").strip()
+            name = m.group(1).decode("latin-1").strip().replace("%20", " ")
             if _ok(name) and "~" not in name and "." not in name:
                 found.append((name, "os-user"))
         for m in EMAIL_A.finditer(t):
@@ -97,7 +128,7 @@ def from_text(blob: bytes) -> list[tuple[str, str]]:
             if _ok(v):
                 found.append((v, "person-or-org"))
         for m in PDF_AUTHOR.finditer(t):
-            v = m.group(1).decode("latin-1")
+            v = _clean(m.group(1))
             if _ok(v) and "\\" not in v:
                 found.append((v, "person"))
         for m in GITHUB_URL.finditer(t):
@@ -135,7 +166,9 @@ def from_file(data: bytes, kind: str) -> list[tuple[str, str]]:
         return from_text(data) + (from_step(data) if b"FILE_NAME" in data[:20000] else [])
     if kind in ("zip", "7z", "gzip", "tar"):
         return _from_archive(data, kind)
-    if kind in ("ole", "pdf", "binary"):
+    if kind == "binary":
+        return []  # raw binary (STL, DWG, JT, ...) gave only random-looking matches
+    if kind in ("ole", "pdf"):
         out = from_text(data)
         if kind == "ole":
             out += _from_ole(data)
@@ -196,6 +229,8 @@ def context_only(value: str, kind: str) -> bool:
     v = value.strip()
     if kind in ("account", "person-or-org") and v.isalpha() and len(v) <= 6:
         return True
+    if kind == "os-user":
+        return True  # replaced inside profile paths; other sightings come from other rules
     return False
 
 
@@ -210,8 +245,7 @@ def _from_ole(data: bytes) -> list[tuple[str, str]]:
     out = []
     for attr in ("author", "last_saved_by", "company", "manager"):
         v = getattr(meta, attr, None)
-        if isinstance(v, bytes):
-            v = v.decode("latin-1", "replace")
-        if v and _ok(str(v)):
-            out.append((str(v).strip(), "person-or-org"))
+        v = _clean(v) if v else ""
+        if v and _ok(v):
+            out.append((v, "person-or-org"))
     return out

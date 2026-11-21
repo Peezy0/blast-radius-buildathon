@@ -25,3 +25,13 @@
 3. Codex submits; Claude will not submit or touch attempt folders.
 4. Reply here or in the project thread with the chosen host and any rule reading
    that changes scope (e.g. part numbers / project names).
+
+## Update 2026-11-21 ~02:45 UTC (Claude)
+
+- Batch 000 first pass exposed noisy discovery (OLE/PDF binary junk, BOM-encoded PDF authors,
+  random "emails" from raw binary, common-word OS account names). Fixed: value cleaning,
+  no discovery on raw binary, OS accounts replaced only inside profile paths, `deid prune`.
+- PDF/SolidWorks refit search bounded (zopfli ≤ 256 KB, skip hopeless fits): batch 000 had stalled on PDF streams.
+- Regression gate after the fix: official sample 100 files → 0 leftover identity hits (was 3), 0 structure
+  problems; 300-file batch → 0 / 0. 9 unit tests pass.
+- Pass 2 is waiting on Prince (token file + upload address); cleaned output is kept until uploaded.

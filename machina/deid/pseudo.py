@@ -18,7 +18,8 @@ from pathlib import Path
 
 MIN_LEN = 4
 # Where a context-only identity (a plain word) is still certainly the identity.
-CONTEXT_FORMS = ("github.com/{}", "gitlab.com/{}", "{}__", "@{}", "github.io/{}", "{}.github.io")
+CONTEXT_FORMS = ("github.com/{}", "gitlab.com/{}", "{}__", "@{}", "github.io/{}", "{}.github.io",
+                 "users\\{}", "users\\\\{}", "users/{}", "home/{}", "documents and settings\\{}")
 LETTERS = "bcdfghjklmnpqrstvwxz"  # consonants only: never spells a real word
 VOWELS = "aeiouy"
 DIGITS = "0123456789"

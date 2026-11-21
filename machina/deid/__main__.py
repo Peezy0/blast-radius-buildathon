@@ -64,6 +64,23 @@ def cmd_discover(a):
     print(json.dumps({"identities_total": len(reg.items), "added_by_kind": added}, indent=1))
 
 
+def cmd_prune(a):
+    """Re-apply the current discovery rules to an existing identity map (keeps the key)."""
+    reg = Registry(a.private)
+    before = len(reg.items)
+    kept = {}
+    for low, v in reg.items.items():
+        kinds = v.get("kinds", [])
+        if kinds == ["manifest-owner"] or disc._ok(low) or "account" in kinds:
+            v.pop("context_only", None)
+            if all(disc.context_only(low, k) for k in kinds):
+                v["context_only"] = True
+            kept[low] = v
+    reg.items = kept
+    reg.save()
+    print(json.dumps({"before": before, "after": len(kept)}))
+
+
 def _init(private):
     global _REG
     _REG = Registry(private)
@@ -148,7 +165,7 @@ def cmd_verify(a):
 def main():
     ap = argparse.ArgumentParser(prog="python -m deid")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("discover", "apply", "verify"):
+    for name in ("discover", "apply", "verify", "prune"):
         s = sub.add_parser(name)
         s.add_argument("--private", required=True, help="private dir for key, mapping and reports")
         s.add_argument("--jobs", type=int, default=os.cpu_count() or 2)
@@ -161,7 +178,7 @@ def main():
         if name == "verify":
             s.add_argument("--output", required=True)
     a = ap.parse_args()
-    {"discover": cmd_discover, "apply": cmd_apply, "verify": cmd_verify}[a.cmd](a)
+    {"discover": cmd_discover, "apply": cmd_apply, "verify": cmd_verify, "prune": cmd_prune}[a.cmd](a)
 
 
 if __name__ == "__main__":

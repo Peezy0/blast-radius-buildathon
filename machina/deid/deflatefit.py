@@ -71,10 +71,10 @@ def _finished(raw: bytes):
                 if st not in seen:
                     seen.add(st)
                     yield st
-    if len(raw) <= 2_000_000:
+    if len(raw) <= 262_144:  # zopfli is slow: small sections only
         try:
             from zopfli.zopfli import compress as zcompress
-            for it in (15, 50):
+            for it in (15,):
                 st = zcompress(raw, numiterations=it)[2:-4]  # zlib container -> raw deflate
                 if st not in seen:
                     seen.add(st)
@@ -88,6 +88,9 @@ def fit(raw: bytes, target: int) -> bytes | None:
     got = _fit_tail(raw, target)
     if got is not None:
         return got
+    # Hopeless when even zlib -9 is far above the target: skip the expensive search.
+    if len(zlib.compress(raw, 9)) - 6 > target + 64:
+        return None
     # Small sections: prepend empty blocks to a finished stream. Empty stored blocks
     # add 5 bytes each; m empty fixed blocks add 10*m bits, applied by shifting the
     # whole bit stream (valid because deflate blocks need no byte alignment, and any
