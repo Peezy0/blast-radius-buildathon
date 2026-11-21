@@ -129,6 +129,46 @@ def cmd_apply(a):
           f"\nexceptions: {len(notes)} (details in private apply-report.json)")
 
 
+def _hits(data, kind, name, reg, depth=0):
+    """Identity hits where content is actually readable: inside sections and archive
+    members, image metadata only; never random matches in compressed bytes."""
+    import gzip
+    import io
+    import zipfile
+    try:
+        if kind == "swx":
+            n = 0
+            for _nm, raw in swfile.iter_text(data):
+                n += _hits(raw, "swx", "", reg, depth + 1) if depth < 3 and swfile.is_swx(raw) else reg.count_bytes(raw)
+            return n
+        if kind == "image":
+            return _image_meta_hits(data, reg)
+        if kind in ("zip", "7z", "gzip") and depth < 5:
+            members = []
+            if kind == "zip":
+                z = zipfile.ZipFile(io.BytesIO(data))
+                members = [(i.filename, z.read(i)) for i in z.infolist() if not i.is_dir()]
+            elif kind == "7z":
+                import py7zr
+                with py7zr.SevenZipFile(io.BytesIO(data), "r") as z:
+                    members = [(k, v.read()) for k, v in z.readall().items()]
+            else:
+                members = [(name[:-3], gzip.decompress(data))]
+            n = 0
+            for mname, blob in members:
+                n += reg.count_bytes(mname.encode("utf-8", "replace"))
+                n += _hits(blob, classify(blob[:8192], mname, len(blob)), mname, reg, depth + 1)
+            return n
+    except Exception:
+        pass  # unreadable archive (source defect): fall through to a raw count
+    return reg.count_bytes(data)
+
+
+def _image_meta_hits(data, reg):
+    from .process import _image
+    return 0 if _image(data, reg) == data else 1
+
+
 def cmd_verify(a):
     """Count remaining original identities (plain, UTF-16, inside SolidWorks sections)
     and check SolidWorks/ZIP structure in the output."""
@@ -144,13 +184,10 @@ def cmd_verify(a):
             leaks["path"] += 1
         data = p.read_bytes()
         kind = classify(data[:8192], p.name, len(data))
-        c = reg.count_bytes(data)
+        c = _hits(data, kind, p.name, reg)
         if kind == "swx":
-            chk = swfile.check(data)
-            if chk["valid_sections"] == 0:
+            if swfile.check(data)["valid_sections"] == 0:
                 struct_bad.append((rel, "no valid sections"))
-            for _nm, raw in swfile.iter_text(data):
-                c += reg.count_bytes(raw)
         elif kind == "zip":
             try:
                 bad = zipfile.ZipFile(io.BytesIO(data)).testzip()

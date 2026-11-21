@@ -34,6 +34,44 @@ def _sw_transform(reg: Registry, res: Result, depth: int):
     return t
 
 
+def _image(data: bytes, reg: Registry) -> bytes:
+    """Metadata only (JPEG APPn/COM segments, PNG text/EXIF chunks), same length.
+    Pixel content (logos) is not changed in v0."""
+    if data.startswith(b"\xff\xd8"):
+        buf = bytearray(data)
+        i = 2
+        while i + 4 <= len(data) and data[i] == 0xFF:
+            marker = data[i + 1]
+            if marker in (0xD9, 0xDA):  # end of image / start of scan: compressed data follows
+                break
+            if marker == 0x01 or 0xD0 <= marker <= 0xD7:
+                i += 2
+                continue
+            seg_len = struct.unpack_from(">H", data, i + 2)[0]
+            if 0xE0 <= marker <= 0xEF or marker == 0xFE:
+                a, b = i + 4, i + 2 + seg_len
+                buf[a:b] = reg.sub_bytes(data[a:b])
+            i += 2 + seg_len
+        return bytes(buf)
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        buf = bytearray(data)
+        i = 8
+        while i + 12 <= len(data):
+            n = struct.unpack_from(">I", data, i)[0]
+            ctype = data[i + 4:i + 8]
+            a, b = i + 8, i + 8 + n
+            if ctype in (b"tEXt", b"iTXt", b"eXIf") and b <= len(data):
+                new = reg.sub_bytes(data[a:b])
+                if new != data[a:b]:
+                    buf[a:b] = new
+                    struct.pack_into(">I", buf, b, zlib.crc32(ctype + new))
+            if ctype == b"IEND":
+                break
+            i = b + 4
+        return bytes(buf)
+    return data
+
+
 PDF_STREAM = re.compile(rb"stream(\r\n|\n)")
 
 
@@ -142,8 +180,10 @@ def process_bytes(data: bytes, name: str, reg: Registry, res: Result | None = No
     if top:
         res = Result(kind)
     try:
-        if kind == "empty" or kind == "image":
-            new = data  # images: pixel/EXIF de-identification not in v0
+        if kind == "empty":
+            new = data
+        elif kind == "image":
+            new = _image(data, reg)
         elif kind == "swx":
             new, rep = swfile.rewrite(data, _sw_transform(reg, res, 1), reg.sub_bytes)
             if rep.unfit:

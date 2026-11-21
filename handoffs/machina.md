@@ -35,3 +35,15 @@
 - Regression gate after the fix: official sample 100 files → 0 leftover identity hits (was 3), 0 structure
   problems; 300-file batch → 0 / 0. 9 unit tests pass.
 - Pass 2 is waiting on Prince (token file + upload address); cleaned output is kept until uploaded.
+
+## Update 2026-11-21 ~05:00 UTC (Claude)
+
+- Commits: e37938e (encrypted-zip member names renamed in place), 3543e19 (noise rules), this commit
+  (JPEG/PNG metadata cleaned at equal length; verify counts hits only in readable content).
+- Batches 000–001 cleaned + verified locally (29,014 files). Their only structure issues are 9 source
+  defects (7 password-protected zips, 1 truncated `.7z.resume-partial`, 1 file without valid SolidWorks sections).
+  These outputs used an incomplete name list and will be re-cleaned before upload.
+- Name scan over all 11 batches complete; pruned list has 2,686 identities by kind (values private).
+- Gate with the complete list: official sample 0 structure problems, 14 leftover hits (13 inside the two
+  `.7z` files incl. the unreadable truncated copy, 1 in a nested SolidWorks part); 300-file batch 0 / 0.
+- Waiting on Prince: token file + upload address. Then: re-clean 000–001, clean + upload 002–010.
