@@ -45,7 +45,10 @@ for b in "$WORK"/batches/*.tsv; do
   run verify --private "$PRIVATE" --output "$WORK/corpus"
   cp "$PRIVATE/verify-report.json" "$PRIVATE/verify-report-$name.json"
   if [ -n "${DEST:-}" ]; then
-    python3 "$WORK/upload.py" --dest "$DEST" --corpus "$WORK/corpus" ${TOKEN_FILE:+--token-file "$TOKEN_FILE"}
+    # Token comes from a file (never argv, chat or git); upload.py re-reads it when it expires.
+    [ -n "${TOKEN_FILE:-}" ] || { echo "set TOKEN_FILE to a 0600 file holding the upload token" >&2; exit 2; }
+    MACHINA_UPLOAD_TOKEN="$(tr -d '[:space:]' < "$TOKEN_FILE")" \
+      python3 "$WORK/upload.py" --dest "$DEST" --corpus "$WORK/corpus" --token-file "$TOKEN_FILE"
   fi
   rm -rf "$WORK/in" "$WORK/corpus"
   touch "$PRIVATE/done-$name"

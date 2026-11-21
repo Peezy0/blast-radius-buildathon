@@ -30,7 +30,7 @@ every run, so discovery can run before apply, batch by batch.
 ```
 WORK=/path/with/35GB PRIVATE=~/.machina-private bash scripts/full_run.sh            # both passes, no upload
 DEST=gs://builders-machina-submissions-1120/teams/<team>/attempt-N/ \
-  MACHINA_UPLOAD_TOKEN=... SKIP_PASS1=1 bash scripts/full_run.sh                     # pass 2 with upload
+  TOKEN_FILE=/secure/path/upload-token SKIP_PASS1=1 bash scripts/full_run.sh      # pass 2 with upload
 ```
 
 `full_run.sh` splits the manifest into whole-folder batches (≤ 15 GB), runs
