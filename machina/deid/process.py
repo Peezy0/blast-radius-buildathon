@@ -72,18 +72,59 @@ def _image(data: bytes, reg: Registry) -> bytes:
     return data
 
 
-PDF_STREAM = re.compile(rb"stream(\r\n|\n)")
+PDF_STREAM = re.compile(rb"(?<!end)stream(\r\n|\n)")
 
 
-def _pdf(data: bytes, reg: Registry, res: Result) -> bytes:
-    buf = bytearray(reg.sub_bytes(data))
-    unfit = 0
+def pdf_readable(data: bytes):
+    """Yield the readable parts of a PDF, as apply sees them: text outside streams,
+    unfiltered streams and inflated Flate streams (never raw image/font bytes)."""
+    pos = 0
     for m in PDF_STREAM.finditer(data):
         s = m.end()
-        if s < 2 or data[s:s + 1] not in (b"x", b"X", b"H", b"h") and data[s] != 0x78:
+        if m.start() < pos:
             continue
         e = data.find(b"endstream", s)
         if e < 0:
+            continue
+        yield data[pos:m.start()]
+        pos = e
+        head = data[max(0, m.start() - 4096):m.start()]
+        k = head.rfind(b"obj")
+        if b"/Filter" not in (head[k:] if k >= 0 else head):
+            yield data[s:e]
+            continue
+        d = zlib.decompressobj()
+        try:
+            raw = d.decompress(data[s:e], 200_000_000)
+        except zlib.error:
+            continue
+        if d.eof:
+            yield raw
+    yield data[pos:]
+
+
+def _pdf(data: bytes, reg: Registry, res: Result, rewrite: bool = True) -> bytes:
+    """Clean text outside streams and in unfiltered streams directly; Flate streams are
+    inflated, cleaned and refitted at their exact size. Other filtered streams (images,
+    fonts) are never touched byte-wise: a random match there would corrupt them."""
+    buf = bytearray(data)
+    unfit = 0
+    pos = 0
+    for m in PDF_STREAM.finditer(data):
+        s = m.end()
+        if m.start() < pos:
+            continue  # the keyword appeared inside the previous stream's data
+        e = data.find(b"endstream", s)
+        if e < 0:
+            continue
+        buf[pos:m.start()] = reg.sub_bytes(data[pos:m.start()])
+        pos = e
+        head = data[max(0, m.start() - 4096):m.start()]
+        k = head.rfind(b"obj")
+        if b"/Filter" not in (head[k:] if k >= 0 else head):
+            buf[s:e] = reg.sub_bytes(data[s:e])
+            continue
+        if data[s:s + 1] not in (b"x", b"X", b"H", b"h") and data[s] != 0x78:
             continue
         chunk = data[s:e]
         d = zlib.decompressobj()
@@ -102,9 +143,44 @@ def _pdf(data: bytes, reg: Registry, res: Result) -> bytes:
             unfit += 1
             continue
         buf[s:s + used] = chunk[:2] + body + struct.pack(">I", zlib.adler32(new))
-    if unfit:
+    buf[pos:] = reg.sub_bytes(data[pos:])
+    if unfit and rewrite:
+        rebuilt = _pdf_rewrite(bytes(buf), reg)
+        if rebuilt is not None:
+            res.notes.append(f"pdf-rewritten:{unfit}")
+            return rebuilt
         res.notes.append(f"pdf-unfit-streams:{unfit}")
     return bytes(buf)
+
+
+def _pdf_rewrite(data: bytes, reg: Registry) -> bytes | None:
+    """Fallback when some stream cannot be refitted at its exact size: rebuild the PDF with
+    pypdf (new offsets and xref), every decodable stream cleaned. Used only if the result
+    parses and its pages read; otherwise the in-place result stands and is reported."""
+    try:
+        import logging
+        import pypdf
+        from pypdf.generic import StreamObject
+        logging.getLogger("pypdf").setLevel(logging.CRITICAL)
+        w = pypdf.PdfWriter(clone_from=pypdf.PdfReader(io.BytesIO(data), strict=False))
+        for obj in list(w._objects):
+            if isinstance(obj, StreamObject):
+                try:
+                    raw = obj.get_data()
+                except Exception:
+                    continue
+                new = reg.sub_bytes(raw)
+                if new != raw:
+                    obj.set_data(new)
+        out = io.BytesIO()
+        w.write(out)
+        result = _pdf(out.getvalue(), reg, Result("pdf"), rewrite=False)  # dictionaries now uncompressed
+        r = pypdf.PdfReader(io.BytesIO(result), strict=False)
+        for page in r.pages[:3]:
+            page.extract_text()
+        return result
+    except Exception:
+        return None
 
 
 def _zip(data: bytes, reg: Registry, res: Result, depth: int) -> bytes:

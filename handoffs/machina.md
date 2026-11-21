@@ -90,3 +90,16 @@
 - Residual-pattern scan (emails and user-profile paths not in the list) over both cleaned gates: only false
   positives (file@part names, random binary) and one generic account. Discovery recall on those patterns looks complete.
 - Still waiting on Prince: token file + upload address.
+
+## Update 2026-11-21 ~09:25 UTC (Claude)
+
+- Fixed a pre-existing PDF bug: the plain-text pass ran over the whole file, so a random 4–13 byte match
+  inside a compressed image/font stream changed those bytes (3 damaged streams in 36 tested PDFs, not caught
+  by the text check). Now text is cleaned outside streams and in unfiltered streams only; Flate streams go
+  through inflate → clean → exact-size refit; other filtered streams are never touched. Damaged streams: 0.
+- PDFs with a stream that cannot keep its size are rebuilt with pypdf (new xref) when the result parses and its
+  pages read (8 of 8 such files in batch 000–001 problem set); otherwise the in-place result is kept and reported.
+- `verify` counts PDF hits only in readable parts (same view as apply), not random bytes in compressed data.
+- Gate (same verify for before/after): sample 2 leftovers (random bytes in the truncated 7z copy), 0 structure,
+  0 unreadable PDFs; 300-file batch 0/0/0; 55 problem files 0 leftovers, 0 unreadable. Tests pass.
+- Still waiting on Prince: token file + upload address.

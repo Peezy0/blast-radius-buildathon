@@ -169,6 +169,9 @@ def _hits(data, kind, name, reg, depth=0):
             return n
         if kind == "image":
             return _image_meta_hits(data, reg)
+        if kind == "pdf":
+            from .process import pdf_readable
+            return sum(reg.count_bytes(b) for b in pdf_readable(data))
         if kind in ("zip", "7z", "gzip") and depth < 5:
             members = []
             if kind == "zip":
