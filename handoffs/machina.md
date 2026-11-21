@@ -115,3 +115,12 @@
 - `verify` uses the same view. Gate: official sample 0 leftovers, 0 structure, 0 unreadable PDFs;
   300-file batch 0/0/0. 12 unit tests pass.
 - Still waiting on Prince: token file + upload address.
+
+## Update 2026-11-21 ~11:15 UTC (Claude)
+
+- Checks this hour (no code change to the cleaner): 150 Inventor files from batch 001 (every 10th):
+  0 leftovers, 0 structure problems; the text-context rule skips only 1 random binary match;
+  1,200 zlib-compressed Inventor streams hold only vendor names (no personal identity).
+  Sample SolidWorks: 777 changed sections, 0 unfit.
+- Docs updated (README/FEASIBILITY limits), `pypdf` added to requirements (used by the PDF fallback and verify).
+- Still waiting on Prince: token file + upload address.

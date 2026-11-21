@@ -108,7 +108,10 @@ Official first 100 files: 90 SolidWorks files, 4 zips, 2 7z, 4 STEP.
 | Batch 009 head (300 files, 0.43 GB: FCStd/STL/STEP) | 300 | 60.2 | 112 | 0 | 0 |
 
 The official sample is dominated by one 135 MB `.7z` (116 s single-threaded repack).
-In the SolidWorks-only measurement, 874 sections needed changes and 863 (98.7 %)
+Update 2026-11-21 10:00 UTC: with the extended padding (non-final empty-block prefixes, bit-level
+tails), all 777 changed top-level SolidWorks sections of the sample are refitted (0 unfit), and PDFs
+whose streams cannot keep their size are rebuilt with pypdf (new xref) when the result reads.
+First measurement: in the SolidWorks-only run, 874 sections needed changes and 863 (98.7 %)
 were refitted in place; the rest are tiny XML sections (≈ 300 bytes compressed) where
 no encoder found an exact fit. They are left byte-identical and reported.
 
@@ -124,8 +127,10 @@ no encoder found an exact fit. They are left byte-identical and reported.
    or part names and numbers" is not attempted in v0.
 3. Not handled: images (logos, EXIF), RAR, DWG compressed sections, Creo/JT/Parasolid
    binary internals, text drawn with font-encoded PDF content.
-4. A small share of SolidWorks/PDF sections cannot be refitted to their exact size
-   (the 1.3 % above); a container rewriter that moves offsets would close this.
+4. Rare SolidWorks sections may still not refit at their exact size (0 of 777 on the sample after
+   the padding update); they are left byte-identical and reported. Vendor names (part suppliers)
+   inside zlib-compressed Inventor streams are not rewritten; no personal identity was found there
+   in a 150-file Inventor sample.
 5. The private key/mapping must persist between passes of one attempt. Losing it
    only changes pseudonyms between attempts, which is allowed.
 

@@ -53,6 +53,5 @@ finished batches so it can resume. Copy the official `upload.py` to `$WORK/` fir
 ## Known limitations
 
 See "Validation limits and open gaps" in FEASIBILITY.md: images/logos, RAR, DWG
-compressed sections, free-text names and part numbers, about 1.3 % of SolidWorks
-sections that cannot be refitted to their exact size, and no CAD application to
+compressed sections, free-text names and part numbers, and no CAD application to
 confirm native files open.
