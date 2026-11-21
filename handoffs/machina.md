@@ -160,3 +160,12 @@
 - After: residual scan shows only pseudonyms, generic accounts and one 3-letter account (below the 4-char
   minimum). The single unreadable PDF in that sample is unreadable in the source too. Gates: sample 0/0/0,
   300-file 0/0/0; 14 tests pass.
+
+## Update 2026-11-21 ~16:25 UTC (Claude)
+
+- Second random 400-file corpus sample (seed 22, < 15 MB, no `*.extracted/`): 1 structure problem — a Fusion
+  `.f3d` whose members use Zstandard (zip method 93), which Python 3.13 zipfile cannot read, so it was only
+  renamed in place. Now read with `zstandard` 0.23.0 (CRC-checked) and rebuilt with Deflate (noted in README).
+  Also 3-letter profile-path accounts (e.g. initials) are now replaced, context-only (paths only).
+- After: sample 0/0/0, 300-file 0/0/0, random-2 0 leftovers / 0 structure / 0 unreadable; 14 tests pass.
+  `zstandard==0.23.0` added to requirements.

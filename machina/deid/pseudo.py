@@ -86,10 +86,9 @@ class Registry:
 
     def add(self, original: str, kind: str, source: str = "", context_only: bool = False) -> bool:
         original = original.strip()
-        if len(original) < MIN_LEN or original.encode("utf-8", "ignore") != original.encode("latin-1", "ignore"):
-            # non-latin-1 identities are recorded but cannot be matched byte-for-byte here
-            if len(original) < MIN_LEN:
-                return False
+        min_len = 3 if context_only else MIN_LEN  # context forms make short accounts unambiguous
+        if len(original) < min_len:
+            return False
         low = original.lower()
         if low in self.items:
             if not context_only:

@@ -193,12 +193,35 @@ def _pdf_rewrite(data: bytes, reg: Registry) -> bytes | None:
         return None
 
 
+ZIP_ZSTD = 93
+
+
+def _zip_read(src: zipfile.ZipFile, data: bytes, info: zipfile.ZipInfo) -> bytes:
+    """zipfile in Python 3.13 cannot read Zstandard members (method 93, used by recent
+    Fusion .f3d files): read those from the local header with the zstandard module."""
+    if info.compress_type != ZIP_ZSTD:
+        return src.read(info)
+    import zstandard
+    off = info.header_offset
+    if data[off:off + 4] != b"PK\x03\x04":
+        raise zipfile.BadZipFile("bad local header")
+    n, e = struct.unpack_from("<HH", data, off + 26)
+    start = off + 30 + n + e
+    raw = zstandard.ZstdDecompressor().decompress(data[start:start + info.compress_size],
+                                                  max_output_size=info.file_size)
+    if len(raw) != info.file_size or zlib.crc32(raw) != info.CRC:
+        raise zipfile.BadZipFile("zstd member CRC mismatch")
+    return raw
+
+
 def _zip(data: bytes, reg: Registry, res: Result, depth: int) -> bytes:
     src = zipfile.ZipFile(io.BytesIO(data))
+    if any(i.compress_type == ZIP_ZSTD for i in src.infolist()):
+        res.notes.append("zip-zstd-rewritten-as-deflate")
     out = io.BytesIO()
     with zipfile.ZipFile(out, "w", allowZip64=True) as dst:
         for info in src.infolist():
-            content = src.read(info) if not info.is_dir() else b""
+            content = _zip_read(src, data, info) if not info.is_dir() else b""
             ni = zipfile.ZipInfo(reg.sub_str(info.filename), info.date_time)
             ni.compress_type = info.compress_type if info.compress_type in (0, 8) else 8
             ni.external_attr, ni.create_system, ni.comment = info.external_attr, info.create_system, reg.sub_bytes(info.comment)

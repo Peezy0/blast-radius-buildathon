@@ -88,12 +88,18 @@ def _ok(v: str) -> bool:
     return len(v) >= 4 and v.lower() not in GENERIC and not VENDOR_ORG.search(v) and not v.isdigit()
 
 
+SHORT_GENERIC = {"all", "dev", "pub", "usr", "tmp", "lib", "bin", "src", "var", "opt", "app", "web",
+                 "www", "git", "new", "old", "own", "guest", "sys", "adm", "std", "doc", "out"}
+
+
 def _ok_user(v: str) -> bool:
     """Account names in profile paths: the usual rules, plus numeric accounts (e.g. a student
     or employee number) of 4+ digits, which are identifying in that position."""
     v = _clean(v)
     if v.isdigit():
         return len(v) >= 4 and len(set(v)) >= 3
+    if len(v) == 3 and v.isalpha():  # short accounts (initials); context-only, so safe
+        return v.lower() not in GENERIC and v.lower() not in SHORT_GENERIC
     return _ok(v)
 
 

@@ -59,6 +59,7 @@ EXPLAIN = {
     "7z-error": "source 7z archive is truncated, damaged or uses an unsupported method; kept as is",
     "gzip-error": "source gzip stream is damaged; kept as is",
     "rar-compressed-members": "RAR5 archive: member names and stored members cleaned in place (CRCs updated); compressed members could not be rewritten (no RAR writer) and are unchanged",
+    "zip-zstd-rewritten-as-deflate": "zip-based file (e.g. Fusion .f3d) whose members used Zstandard; rebuilt with Deflate, contents unchanged apart from pseudonyms",
     "rar-bad-header": "RAR archive with a damaged header; cleaned up to that point",
     "partial-from-cleaned-sibling": "truncated download copy of a sibling archive; written as the cleaned sibling cut to the same length",
 }
