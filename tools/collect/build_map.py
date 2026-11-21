@@ -179,6 +179,72 @@ def instantiators_of_module(rel):
         s |= inst.get(m + ":" + q, set())
     return s
 
+# ---- class data-attribute reads ----
+attr_reads = collections.defaultdict(set)
+import_keys = set()
+instrumented = set()
+attr_files = [os.path.join(cov_dir, "attrs.json")] + [
+    os.path.join(cov_dir, f) for f in sorted(os.listdir(cov_dir)) if f.startswith("worker-attrs-")]
+have_attrs = os.path.exists(attr_files[0])
+for fn in attr_files if have_attrs else []:
+    d = json.load(open(fn))
+    import_keys.update(d["import"])
+    instrumented.update(d.get("instrumented", []))
+    for ctx, keys in d["reads"].items():
+        ts = ctx_tests(ctx)
+        if ts is None:
+            import_keys.update(keys)  # collection/between reads behave like import-time
+            continue
+        for k in keys:
+            attr_reads[k] |= ts
+
+def _static_import_names():
+    """Names read off cls/klass in __init_subclass__ and metaclass methods (they
+    run at class creation, before the new class's own attributes are tracked)."""
+    names = set()
+    for rel, src in files.items():
+        if not rel.startswith("sqlglot/"):
+            continue
+        tree = ast.parse(src)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                is_meta = any(isinstance(b, ast.Name) and b.id == "type" for b in node.bases)
+                for fn in node.body:
+                    if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) and (
+                        fn.name == "__init_subclass__" or (is_meta and fn.name in ("__new__", "__init__", "__call__"))
+                    ):
+                        for m in ast.walk(fn):
+                            if isinstance(m, ast.Attribute):
+                                names.add(m.attr)
+                            elif isinstance(m, ast.Constant) and isinstance(m.value, str):
+                                names.add(m.value)
+    return names
+STATIC_IMPORT_NAMES = _static_import_names() if have_attrs else set()
+
+def _definition_time_names(tree):
+    """Attribute names read at module/class-body level of this module (they run
+    while the module executes, before its classes are instrumented)."""
+    names = set()
+    def walk(node, in_func):
+        for ch in ast.iter_child_nodes(node):
+            if isinstance(ch, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                # decorators and defaults evaluate at definition time
+                for d in getattr(ch, "decorator_list", []):
+                    walk(d, in_func)
+                walk(ch.args, in_func)
+                walk_body = ch.body if isinstance(ch.body, list) else [ch.body]
+                for b in walk_body:
+                    walk(b, True)
+                continue
+            if isinstance(ch, ast.Attribute) and not in_func:
+                names.add(ch.attr)
+            if isinstance(ch, ast.Name) and isinstance(ch.ctx, ast.Load) and not in_func:
+                names.add(ch.id)  # bare names in class bodies read earlier class attrs
+            walk(ch, in_func)
+    walk(tree, False)
+    return names
+
+SUBPROCESS_TESTS = {index[t] for t in index if t.endswith("::test_lazy_load")}
 out_files = {}
 for rel, src in files.items():
     by_line = lines_by_file.get(rel, {})
@@ -190,6 +256,10 @@ for rel, src in files.items():
             module_tests |= tests_executing(imp)
     if rel.startswith("tests/"):
         module_tests |= members.get(rel, set())
+    elif module_ctx_lines.get(rel):
+        # imported at collection time: a fresh `python -c "import sqlglot"`
+        # child (test_lazy_load) runs this module-level code untraced
+        module_tests |= SUBPROCESS_TESTS
     class_tests = {}
     m = modname(rel)
     for q, (a, b) in classes.get(rel, {}).items():
@@ -209,7 +279,22 @@ for rel, src in files.items():
         if key not in set_ids:
             set_ids[key] = len(sets); sets.append(list(key))
         return set_ids[key]
+    attrs = None
+    if have_attrs and rel.startswith("sqlglot/"):
+        attrs = {}
+        dt_names = _definition_time_names(ast.parse(src))
+        for q in classes.get(rel, {}):
+            per = {}
+            prefix = m + ":" + q + "."
+            for key in [k for k in instrumented if k.startswith(prefix)]:
+                name = key[len(prefix):]
+                if "." in name or key in import_keys or name in STATIC_IMPORT_NAMES or name in dt_names:
+                    continue
+                per[name] = sid(attr_reads.get(key, set()))
+            if per:
+                attrs[q] = per
     out_files[rel] = {
+        "attrs": attrs,
         "source": src,
         "lines": {str(l): sid(ts) for l, ts in sorted(by_line.items()) if ts},
         "module": sid(module_tests),

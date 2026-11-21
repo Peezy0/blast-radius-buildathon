@@ -105,16 +105,35 @@ def apply(source, hunks):
         out.extend(old[cur:start])
         cur = start
         has_del = any(k == "-" for k, _ in body)
-        for k, v in body:
+        # pair runs of n deleted lines immediately followed by n added lines
+        pairs = {}
+        j = 0
+        while j < len(body):
+            if body[j][0] == "-":
+                a = j
+                while j < len(body) and body[j][0] == "-":
+                    j += 1
+                b = j
+                while j < len(body) and body[j][0] == "+":
+                    j += 1
+                if j - b == b - a:
+                    for off in range(b - a):
+                        pairs[b + off] = a + off
+            else:
+                j += 1
+        old_line_of = {}
+        for pos, (k, v) in enumerate(body):
             if k != "+":
                 if cur >= len(old) or old[cur] != v:
                     raise Unknown("context mismatch")
                 if k == "-":
                     deleted.append(cur + 1)
+                old_line_of[pos] = cur + 1
                 cur += 1
             if k != "-":
                 if k == "+":
-                    added.append((len(out) + 1, cur + 1, has_del))
+                    paired = old_line_of.get(pairs[pos]) if pos in pairs else None
+                    added.append((len(out) + 1, cur + 1, has_del, paired))
                 out.append(v)
     out.extend(old[cur:])
     return "\n".join(out), deleted, added
@@ -212,12 +231,62 @@ def _parent_container(idx, c):
     return best
 
 
-def _old_line_tests(rec, idx, line):
+def _same_def_signature_only(c, nidx):
+    """True when the def with this qualname still exists with the same name and
+    decorators, i.e. only arguments/defaults/annotations changed: then only calls
+    (which execute the body) can observe the change."""
+    if nidx is None or c is None or c[2] != "def":
+        return False
+    for o in nidx.containers:
+        if o[2] == "def" and o[3] == c[3]:
+            old, new = c[4], o[4]
+            return (
+                type(old) is type(new)
+                and [ast.dump(d) for d in old.decorator_list] == [ast.dump(d) for d in new.decorator_list]
+            )
+    return False
+
+
+def _assigned_names(node):
+    if isinstance(node, ast.Assign) and all(isinstance(t, ast.Name) for t in node.targets):
+        return [t.id for t in node.targets]
+    if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.value is not None:
+        return [node.target.id]
+    return None
+
+
+def _class_targets(tree):
+    out = {}
+    def walk(node, prefix):
+        for ch in ast.iter_child_nodes(node):
+            if isinstance(ch, ast.ClassDef):
+                q = prefix + ch.name
+                names = []
+                for b in ch.body:
+                    if isinstance(b, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+                        for t in (b.targets if isinstance(b, ast.Assign) else [b.target]):
+                            names.append(ast.dump(t))
+                out[q] = names
+                walk(ch, q + ".")
+            elif isinstance(ch, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                walk(ch, prefix + ch.name + ".<locals>.")
+    walk(tree, "")
+    return out
+
+
+def _old_line_tests(rec, idx, line, nidx=None, attr_ok=False):
     st = idx.stmt(line)
     if st is None:
         return _container_tests(rec, idx, line)
     start, end, node, header_end = st
     c = idx.container(line)
+    if (
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.lineno <= line <= header_end
+        and c is not None and c[4] is node
+        and _same_def_signature_only(c, nidx)
+    ):
+        return _lines_tests(rec, header_end + 1, end)
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and line <= header_end:
         # signature/decorator/base change: effect on the enclosing container + users
         parent = _parent_container(idx, c) if c is not None and c[4] is node else c
@@ -228,12 +297,44 @@ def _old_line_tests(rec, idx, line):
         else:
             out |= _lines_tests(rec, start, end)
         return out
+    if c is not None and c[2] == "class" and attr_ok:
+        names = _assigned_names(node)
+        per = (rec.get("attrs") or {}).get(c[3])
+        if names and per is not None and all(n in per for n in names):
+            # class data attribute: only tests that read it (via any instance or
+            # subclass) can observe the new value
+            sets = rec["sets"]
+            out = set()
+            for n in names:
+                out.update(sets[per[n]])
+            return out
     if c is None or c[2] == "class":
         return _container_tests(rec, idx, line, inner=c)
     # inside a function body
     if line <= header_end or not isinstance(getattr(node, "body", None), list):
         return _lines_tests(rec, start, header_end if line <= header_end else end)
     return _lines_tests(rec, start, end)
+
+
+def _scope_signature(tree):
+    """Per function: bound names, generator/async-ness and global/nonlocal
+    declarations. If unchanged, a statement edit cannot change how other
+    statements of the function resolve names."""
+    sig = []
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            stores, flags = set(), set()
+            for m in ast.walk(n):
+                if isinstance(m, ast.Name) and isinstance(m.ctx, (ast.Store, ast.Del)):
+                    stores.add(m.id)
+                elif isinstance(m, (ast.Yield, ast.YieldFrom, ast.Await)):
+                    flags.add(type(m).__name__)
+                elif isinstance(m, (ast.Global, ast.Nonlocal)):
+                    flags.update(m.names)
+                elif isinstance(m, ast.arg):
+                    stores.add(m.arg)
+            sig.append((getattr(n, "name", "<lambda>"), n.lineno, frozenset(stores), frozenset(flags)))
+    return sig
 
 
 def select_file(rec, hunks):
@@ -252,17 +353,25 @@ def select_file(rec, hunks):
     oidx = _Index(old_tree)
     nidx = _Index(new_tree)
     out = set(rec["sets"][rec["readers"]])
+    attr_ok = _class_targets(old_tree) == _class_targets(new_tree)
     for line in deleted:
         if _is_noop_line(old_lines[line - 1], line, old_spans):
             continue
-        out |= _old_line_tests(rec, oidx, line)
-    for new_line, before_old, has_del in added:
+        out |= _old_line_tests(rec, oidx, line, nidx, attr_ok)
+    scope_same = _scope_signature(old_tree) == _scope_signature(new_tree)
+    # class attribute rule only when no class gains, loses or renames an attribute
+    attr_ok = _class_targets(old_tree) == _class_targets(new_tree)
+    for new_line, before_old, has_del, paired in added:
         if _is_noop_line(new_lines[new_line - 1], new_line, new_spans):
+            continue
+        if paired is not None and scope_same:
+            # one-for-one line replacement: the old statement rule covers it
+            out |= _old_line_tests(rec, oidx, paired, nidx, attr_ok)
             continue
         if has_del:
             # replacement: map to the old statement at the same spot as well
             ref = min(max(before_old - 1, 1), len(old_lines))
-            out |= _old_line_tests(rec, oidx, ref)
+            out |= _old_line_tests(rec, oidx, ref, nidx)
         # insertion: effect on the container in the new tree (same qualname in old)
         c = nidx.container(new_line)
         st = nidx.stmt(new_line)

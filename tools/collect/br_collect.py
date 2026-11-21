@@ -41,6 +41,82 @@ _cov = coverage.Coverage(
 _cov.start()
 sys.addaudithook(_audit)
 
+# --- class data-attribute read tracking ------------------------------------
+# After a sqlglot module executes, each non-callable, non-dunder class attribute
+# is replaced by a non-data descriptor that records (defining class, name) in
+# the current context. Reads while any sqlglot module is executing (imports,
+# class creation, metaclass/__init_subclass__ work) are recorded as import-time.
+import importlib.abc, importlib.machinery, types as _t2
+_attr_reads = {}
+_instrumented = set()
+_CUR_INIT = None
+_import_reads = set()
+_import_depth = [0]
+_CUR = [_attr_reads.setdefault("collect", set())]
+
+class _AttrRec:
+    __slots__ = ("key", "value")
+    def __init__(self, key, value):
+        self.key = key; self.value = value
+    def __get__(self, obj, owner=None):
+        if _import_depth[0]:
+            _import_reads.add(self.key)
+        else:
+            _CUR[0].add(self.key)
+        return self.value
+
+_SKIP_TYPES = (_t2.FunctionType, classmethod, staticmethod, property, type,
+               _t2.BuiltinFunctionType, _t2.MethodType)
+
+def _instrument_module(mod):
+    name = mod.__name__
+    stack = [v for v in list(vars(mod).values()) if isinstance(v, type)]
+    seen = set()
+    while stack:
+        c = stack.pop()
+        if id(c) in seen or c.__module__ != name or issubclass(c, enum.Enum):
+            continue
+        seen.add(id(c))
+        for k, v in list(vars(c).items()):
+            if isinstance(v, type):
+                stack.append(v); continue
+            if k.startswith("__") or isinstance(v, (_SKIP_TYPES, _AttrRec)) or callable(v) \
+                    or hasattr(type(v), "__get__"):
+                continue
+            try:
+                key = name + ":" + c.__qualname__ + "." + k
+                setattr(c, k, _AttrRec(key, v))
+                _instrumented.add(key)
+            except (TypeError, AttributeError):
+                pass
+
+class _Loader(importlib.abc.Loader):
+    def __init__(self, inner):
+        self.inner = inner
+    def create_module(self, spec):
+        return self.inner.create_module(spec)
+    def exec_module(self, module):
+        _import_depth[0] += 1
+        try:
+            self.inner.exec_module(module)
+        finally:
+            _import_depth[0] -= 1
+        _instrument_module(module)
+    def __getattr__(self, item):
+        return getattr(self.inner, item)
+
+class _Finder(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path, target=None):
+        if not (fullname == "sqlglot" or fullname.startswith("sqlglot.")):
+            return None
+        spec = importlib.machinery.PathFinder.find_spec(fullname, path)
+        if spec is not None and spec.loader is not None and not isinstance(spec.loader, _Loader):
+            spec.loader = _Loader(spec.loader)
+        return spec
+
+if os.environ.get("BR_ATTRS", "1") == "1":
+    sys.meta_path.insert(0, _Finder())
+
 _types = {}
 _wrapped_mods = set()
 import enum, functools, types as _pytypes
@@ -74,6 +150,11 @@ def _wrap_new_modules():
 
 def _switch(name):
     _wrap_new_modules()
+    gen = sys.modules.get("sqlglot.generator")
+    if gen is not None and isinstance(getattr(gen, "_DISPATCH_CACHE", None), dict):
+        # per-class dispatch cache: clear so every test re-reads TRANSFORMS
+        gen._DISPATCH_CACHE.clear()
+    _CUR[0] = _attr_reads.setdefault(name, set())
     _ctx[0] = name
     _cov.switch_context(name)
 
@@ -85,6 +166,8 @@ def _flush_worker():
         json.dump({k: sorted(v) for k, v in _opens.items()}, f)
     with open(os.path.join(OUT, "worker-types-%s.json" % tag), "w") as f:
         json.dump(_types_out(), f)
+    with open(os.path.join(OUT, "worker-attrs-%s.json" % tag), "w") as f:
+        json.dump({"reads": {k: sorted(v) for k, v in _attr_reads.items()}, "import": sorted(_import_reads), "instrumented": sorted(_instrumented)}, f)
 
 def _run_in_ctx(ctx, fn, args, kwargs):
     """Executed in a worker: attribute the task to the test that submitted it."""
@@ -149,6 +232,8 @@ def pytest_sessionfinish(session, exitstatus):
         json.dump(_types_out(), f)
     with open(os.path.join(OUT, "outcomes.json"), "w") as f:
         json.dump(_outcomes, f)
+    with open(os.path.join(OUT, "attrs.json"), "w") as f:
+        json.dump({"reads": {k: sorted(v) for k, v in _attr_reads.items()}, "import": sorted(_import_reads), "instrumented": sorted(_instrumented)}, f)
 
 def _types_out():
     out = {}

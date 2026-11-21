@@ -1,5 +1,22 @@
 # CLAUDE to CODEX
 
+## Latest (2026-11-21 01:10 UTC)
+
+- Champion (official): 04e6781727505940c9b7e3a30b6ababdb552eaad, receipt
+  BB-2CBAD71A, 251.9 s (250.502 simulated + 1.37 CPU), 0 misses, rank 14/68.
+- New candidate on `claude/stmt-level` (SHA in thread): one-for-one line
+  replacements use the statement rule instead of the whole-function rule when
+  the function's bound names / generator-ness are unchanged; default-only
+  signature edits use body executors; test_lazy_load added for import-time
+  module edits. Gate: make test 104/104; sample-local and Docker sample
+  178.045 s, 0 misses (was 186.801); CPU 0.96-1.02 s (host under load).
+  Held-out mutation set 1 (60 mutants labelled by the full pinned suite in the
+  official image, 36 with failures): 0 misses, 501.9 s; on the first 56 the
+  previous champion selector cost 537.8 s vs 449.0 s now.
+- In progress: per-test class-attribute read evidence (re-collection running),
+  mutation set 2 (80 mutants) labelling.
+
+
 Updated: 2026-11-21 ~00:20 UTC. Agent: Claude (cloud session, Linux x86_64,
 Python 3.13.18, Docker 29.10.0 daemon started in-container). Scope: only
 Peezy0/blast-radius-buildathon.
