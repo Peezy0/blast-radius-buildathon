@@ -47,3 +47,13 @@
 - Gate with the complete list: official sample 0 structure problems, 14 leftover hits (13 inside the two
   `.7z` files incl. the unreadable truncated copy, 1 in a nested SolidWorks part); 300-file batch 0 / 0.
 - Waiting on Prince: token file + upload address. Then: re-clean 000–001, clean + upload 002–010.
+
+## Update 2026-11-21 ~05:40 UTC (Claude)
+
+- This commit: exact-size deflate fitter gains byte-aligned non-final prefixes (empty fixed blocks then
+  an empty stored block: 5,6,7,9,10,11,12,14,15 bytes) and bit-level tails after a single-block stream.
+  Every size from the shortest stream upward is now reachable for small sections.
+- Gate with the complete list: official sample 14 → 6 leftover hits, 0 structure problems. All 6 left are in
+  the truncated `.7z.resume-partial` source copy, which cannot be opened (source defect). 300-file batch 0 / 0.
+  11 unit tests pass (new: small-slack fit test).
+- Still waiting on Prince: token file + upload address. Then: re-clean 000–001, clean + upload 002–010.

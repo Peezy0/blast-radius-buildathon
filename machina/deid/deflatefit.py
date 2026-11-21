@@ -43,6 +43,34 @@ for _m in range(1, 9):
         TAILS.setdefault(len(_t), _t)
 
 
+def _prefix(m: int) -> bytes:
+    """m empty non-final fixed blocks then one empty stored block: byte aligned, not final."""
+    bits: list[int] = []
+    for _ in range(m):
+        bits.extend([0, 1, 0] + [0] * 7)
+    bits.extend([0, 0, 0])
+    while len(bits) % 8:
+        bits.append(0)
+    bits.extend([0] * 16 + [1] * 16)
+    return bytes(sum(b << j for j, b in enumerate(bits[k:k + 8])) for k in range(0, len(bits), 8))
+
+
+PREFIXES: dict[int, bytes] = {}
+for _m in range(0, 9):
+    PREFIXES.setdefault(len(_prefix(_m)), _prefix(_m))
+
+
+def _lead(r: int) -> bytes | None:
+    """Byte-aligned non-final empty blocks of exactly r bytes (r == 0 gives b"")."""
+    if r == 0:
+        return b""
+    for plen, pre in PREFIXES.items():
+        rest = r - plen
+        if rest >= 0 and rest % 5 == 0:
+            return EMPTY_STORED * (rest // 5) + pre
+    return None
+
+
 def _verify(stream: bytes, raw: bytes) -> bool:
     d = zlib.decompressobj(-15)
     try:
@@ -96,12 +124,12 @@ def fit(raw: bytes, target: int) -> bytes | None:
     # whole bit stream (valid because deflate blocks need no byte alignment, and any
     # stored block inside would fail verification).
     finished = list(_finished(raw))
-    for m in range(0, 5):
+    for m in range(0, 13):
         for st in finished:
-            for shifted in ([st] if m == 0 else _shift_prepend_fixed(st, m)):
-                r = target - len(shifted)
-                if r >= 0 and r % 5 == 0:
-                    stream = EMPTY_STORED * (r // 5) + shifted
+            for shifted in ([st] if m == 0 else _shift_prepend_fixed(st, m) + _append_fixed(st, raw, m)):
+                lead = _lead(target - len(shifted)) if target >= len(shifted) else None
+                if lead is not None:
+                    stream = lead + shifted
                     if _verify(stream, raw):
                         return stream
     return None
@@ -118,6 +146,47 @@ def _shift_prepend_fixed(stream: bytes, m: int) -> list[bytes]:
     full = value.to_bytes(nbytes, "little")
     # the source's last byte carried padding bits, so one byte fewer may suffice
     return [full[:-1], full] if full.endswith(b"\x00") else [full]
+
+
+def _append_fixed(stream: bytes, raw: bytes, k: int) -> list[bytes]:
+    """Make the stream's single block non-final and append, at bit level right after
+    its end-of-block code, k-1 empty fixed blocks, optionally one empty stored block
+    (byte aligned, which gives sizes that 10-bit steps skip), then a final empty fixed block."""
+    if not stream or not stream[0] & 1:
+        return []
+    whole = int.from_bytes(stream, "little")
+    out = []
+    for drop in range(0, 8):
+        nbits = 8 * len(stream) - drop
+        if drop and (whole >> nbits):
+            break  # dropped bits must be zero padding
+        first = None
+        for stored in (0, 1):
+            tail_bits: list[int] = []
+            pos = nbits
+            def fixed(final: int) -> None:
+                nonlocal pos
+                tail_bits.extend([final, 1, 0] + [0] * 7); pos += 10
+            for _ in range(k - 1):
+                fixed(0)
+            for _ in range(stored):
+                tail_bits.extend([0, 0, 0]); pos += 3
+                while pos % 8:
+                    tail_bits.append(0); pos += 1
+                tail_bits.extend([0] * 16 + [1] * 16); pos += 32
+            fixed(1)
+            v = (whole & ~1) | (sum(b << j for j, b in enumerate(tail_bits)) << nbits)
+            cand = v.to_bytes((pos + 7) // 8, "little")
+            if stored == 0:
+                if not _verify(cand, raw):
+                    break  # wrong end-of-block position: try the next drop
+                first = cand
+            elif _verify(cand, raw):
+                out.append(cand)
+        if first is not None:
+            out.insert(0, first)
+            return out
+    return out
 
 
 def _fit_tail(raw: bytes, target: int) -> bytes | None:

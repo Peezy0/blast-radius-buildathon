@@ -75,6 +75,18 @@ class T(unittest.TestCase):
         self.assertGreaterEqual(fitted, len(sizes) - 2)  # a few residues near the minimum can be unreachable
         self.assertIsNone(deflatefit.fit(raw, 20))  # never returns a stream that does not round-trip
 
+    def test_deflate_fit_small_slack(self):
+        # A small XML section whose best stream is only a few bytes under the target:
+        # every size from the shortest stream upward must be reachable.
+        raw = (b'<?xml version="1.0"?><cp:coreProperties><dc:creator>Qbtrvlo Nmexa</dc:creator>'
+               b'<cp:lastModifiedBy>Qbtrvlo</cp:lastModifiedBy></cp:coreProperties>')
+        best = min(len(s) for s in deflatefit._finished(raw))
+        for target in range(best, best + 25):
+            got = deflatefit.fit(raw, target)
+            self.assertIsNotNone(got, target)
+            self.assertEqual(len(got), target)
+            self.assertTrue(deflatefit._verify(got, raw))
+
     def test_swx_rewrite_in_place(self):
         core = (b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><cp:coreProperties xmlns:cp="http://'
                 b'schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/'
