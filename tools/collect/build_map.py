@@ -200,6 +200,7 @@ attr_reads = collections.defaultdict(set)
 import_keys = set()
 instrumented = set()
 dictkeys = {}
+import_sites = collections.defaultdict(set)
 attr_files = [os.path.join(cov_dir, "attrs.json")] + [
     os.path.join(cov_dir, f) for f in sorted(os.listdir(cov_dir)) if f.startswith("worker-attrs-")]
 have_attrs = os.path.exists(attr_files[0])
@@ -208,6 +209,8 @@ for fn in attr_files if have_attrs else []:
     import_keys.update(d["import"])
     instrumented.update(d.get("instrumented", []))
     dictkeys.update(d.get("dictkeys", {}))
+    for rk, site in d.get("import_sites", []):
+        import_sites[rk].add(site)
     for ctx, keys in d["reads"].items():
         ts = ctx_tests(ctx)
         if ts is None:
@@ -278,6 +281,116 @@ def _bare_definition_names(tree):
             walk(ch, in_func)
     walk(tree, False)
     return names
+
+# ---- class-body dict literals: per-key value readers, through copies ----
+_trees = {}
+def _tree(rel):
+    if rel not in _trees:
+        _trees[rel] = ast.parse(files[rel]) if rel in files else None
+    return _trees[rel]
+
+def _names_in(node):
+    return {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+
+def _copy_target(site):
+    """If an import-time read at `site` is a class-body dict display copying a
+    dict's entries unchanged (`**D` or `**{k: v for k, v in D.items() if <k only>}`),
+    return the receiving class attribute's key, else None."""
+    path, _, line = site.rpartition(":")
+    try:
+        line = int(line)
+    except ValueError:
+        return None
+    rel = os.path.relpath(path, root)
+    tree = _tree(rel)
+    if tree is None:
+        return None
+    found = []
+    def walk(node, prefix):
+        for ch in ast.iter_child_nodes(node):
+            if isinstance(ch, ast.ClassDef):
+                q = prefix + ch.name
+                for b in ch.body:
+                    if isinstance(b, ast.ClassDef):
+                        continue
+                    if b.lineno <= line <= b.end_lineno:
+                        found.append((q, b))
+                walk(ch, q + ".")
+    walk(tree, "")
+    if len(found) != 1:
+        return None
+    q, st = found[0]
+    if not (isinstance(st, ast.Assign) and len(st.targets) == 1 and isinstance(st.targets[0], ast.Name)
+            and isinstance(st.value, ast.Dict)):
+        return None
+    for k, v in zip(st.value.keys, st.value.values):
+        if not (v.lineno <= line <= v.end_lineno):
+            continue
+        if k is not None:
+            return None  # read inside a key/value expression
+        if isinstance(v, (ast.Name, ast.Attribute)):
+            return modname(rel) + ":" + q + "." + st.targets[0].id
+        if isinstance(v, ast.DictComp) and len(v.generators) == 1:
+            g = v.generators[0]
+            if (isinstance(v.key, ast.Name) and isinstance(v.value, ast.Name) and not g.is_async
+                    and isinstance(g.target, ast.Tuple) and len(g.target.elts) == 2
+                    and all(isinstance(e, ast.Name) for e in g.target.elts)
+                    and g.target.elts[0].id == v.key.id and g.target.elts[1].id == v.value.id
+                    and v.key.id != v.value.id
+                    and isinstance(g.iter, ast.Call) and not g.iter.args and not g.iter.keywords
+                    and isinstance(g.iter.func, ast.Attribute) and g.iter.func.attr == "items"
+                    and not any(v.value.id in _names_in(c) for c in g.ifs)):
+                return modname(rel) + ":" + q + "." + st.targets[0].id
+        return None
+    return None
+
+_bare_cache = {}
+def _dict_base_ok(dkey):
+    """Readers of this dict's values are all recorded (wrapped before use)."""
+    toks = dictkeys.get(dkey)
+    if not toks or None in toks:
+        return False
+    m, _, qa = dkey.partition(":")
+    name = qa.rsplit(".", 1)[-1]
+    rel = M2F.get(m)
+    if rel is None:
+        return False
+    if rel not in _bare_cache:
+        _bare_cache[rel] = _bare_definition_names(_tree(rel))
+    return name not in _bare_cache[rel]
+
+_kr_memo = {}
+def key_readers(dkey, tok):
+    """Tests that can observe a change to dkey's value under key token tok, or
+    None when some reader is not attributable (import-time use, unknown copy)."""
+    memo = (dkey, tok)
+    if memo in _kr_memo:
+        return _kr_memo[memo]
+    _kr_memo[memo] = None  # cycle guard
+    out = None
+    if _dict_base_ok(dkey) and tok in dictkeys[dkey]:
+        out = set(attr_reads.get(dkey + "\x00" + tok, set())) | attr_reads.get(dkey + "\x00*", set())
+        for rk in (dkey + "\x00" + tok, dkey + "\x00*"):
+            if rk in import_keys:
+                sites = import_sites.get(rk, set())
+                if not sites:
+                    out = None; break
+                for site in sites:
+                    tgt = _copy_target(site)
+                    if tgt is None or tgt == dkey:
+                        out = None; break
+                    if tok not in (dictkeys.get(tgt) or ()):
+                        if _dict_base_ok(tgt):
+                            continue  # filtered out of the copy
+                        out = None; break
+                    sub = key_readers(tgt, tok)
+                    if sub is None:
+                        out = None; break
+                    out |= sub
+                if out is None:
+                    break
+    _kr_memo[memo] = out
+    return out
 
 SUBPROCESS_TESTS = {index[t] for t in index if t.endswith("::test_lazy_load")}
 def base_module_tests(rel):
@@ -405,15 +518,18 @@ for rel, src in files.items():
             # value readers (class-creation reads are recorded as import reads)
             for key in [k for k in dictkeys if k.startswith(prefix)]:
                 name = key[len(prefix):]
-                toks = dictkeys[key]
-                if "." in name or name in bare_names or not toks or None in toks \
-                        or key + "\x00*" in import_keys:
+                if "." in name or not _dict_base_ok(key):
+                    continue
+                by = {}
+                for t in set(dictkeys[key]):
+                    r = key_readers(key, t)
+                    by[t] = None if r is None else sid(r)
+                if all(v is None for v in by.values()):
                     continue
                 dk.setdefault(q, {})[name] = {
-                    "keys": toks,
-                    "all": sid(attr_reads.get(key + "\x00*", set())),
-                    "by": {t: (None if key + "\x00" + t in import_keys else sid(attr_reads.get(key + "\x00" + t, set())))
-                           for t in set(toks)},
+                    "keys": dictkeys[key],
+                    "all": sid(set()),  # whole-dict readers are folded into "by"
+                    "by": by,
                 }
             if per:
                 attrs[q] = per

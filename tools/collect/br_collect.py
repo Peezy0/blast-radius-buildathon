@@ -83,6 +83,15 @@ def _key_token(k):
         return None if None in parts else "(" + ", ".join(parts) + ("," if len(parts) == 1 else "") + ")"
     return None
 
+_import_sites = set()   # (read key, "file:line" of the reading code) at import
+_suppress = [False]
+
+def _site():
+    f = sys._getframe(1)
+    while f is not None and f.f_code.co_filename == __file__:
+        f = f.f_back
+    return "%s:%d" % (f.f_code.co_filename, f.f_lineno) if f is not None else "?"
+
 class _RecDict(dict):
     """Class-attribute dict that records which key's value each context reads.
     Value reads of key K go to '<attr>\x00<token>'; whole-dict reads (items,
@@ -91,8 +100,11 @@ class _RecDict(dict):
     uses these records when an edit keeps the dict's keys."""
     __slots__ = ("_k", "_tm")
     def _all(self):
+        if _suppress[0]:
+            return
         if _import_depth[0]:
             _import_reads.add(self._k + "\x00*")
+            _import_sites.add((self._k + "\x00*", _site()))
         else:
             _CUR[0].add(self._k + "\x00*")
     def _one(self, k):
@@ -104,8 +116,11 @@ class _RecDict(dict):
             if dict.__contains__(self, k):
                 self._all()  # key added at runtime: no source mapping
             return
+        if _suppress[0]:
+            return
         if _import_depth[0]:
             _import_reads.add(t)
+            _import_sites.add((t, _site()))
         else:
             _CUR[0].add(t)
     def __getitem__(self, k):
@@ -210,6 +225,60 @@ def _build_class(func, name, *bases, **kw):
 
 _bi.__build_class__ = _build_class
 
+class _DispatchRec(dict):
+    """Generator dispatch table (a copy of cls.TRANSFORMS plus *_sql methods):
+    a lookup that returns a TRANSFORMS value is recorded as a read of that key."""
+    __slots__ = ("_t",)
+    def _rec(self, k):
+        try:
+            v = dict.get(self, k, _MISSING)
+            if v is not _MISSING and dict.get(self._t, k, _MISSING) is v:
+                self._t._one(k)
+        except TypeError:
+            pass
+    def get(self, k, *a):
+        self._rec(k); return dict.get(self, k, *a)
+    def __getitem__(self, k):
+        self._rec(k); return dict.__getitem__(self, k)
+    def __iter__(self):
+        return dict.__iter__(self)
+    def items(self):
+        self._t._all(); return dict.items(self)
+    def values(self):
+        self._t._all(); return dict.values(self)
+    def copy(self):
+        self._t._all(); return dict(dict.items(self))
+
+_MISSING = object()
+
+def _patch_dispatch(mod):
+    orig = getattr(mod, "_build_dispatch", None)
+    if orig is None:
+        return
+    def _build_dispatch(cls):
+        _suppress[0] = True
+        try:
+            d = orig(cls)
+        finally:
+            _suppress[0] = False
+        t = cls.__dict__.get("TRANSFORMS")
+        t = getattr(t, "value", None) if isinstance(t, _AttrRec) else t
+        if not isinstance(t, _RecDict):
+            # inherited TRANSFORMS: find the defining class's dict
+            for c in cls.__mro__:
+                r = c.__dict__.get("TRANSFORMS")
+                if r is not None:
+                    t = getattr(r, "value", r)
+                    break
+        if isinstance(t, _RecDict) and type(d) is dict:
+            out = _DispatchRec(d)
+            out._t = t
+            return out
+        if isinstance(t, _RecDict):
+            t._all()
+        return d
+    mod._build_dispatch = _build_dispatch
+
 _SKIP_TYPES = (_t2.FunctionType, classmethod, staticmethod, property, type,
                _t2.BuiltinFunctionType, _t2.MethodType)
 
@@ -255,6 +324,8 @@ class _Loader(importlib.abc.Loader):
             _import_ctx_stack.pop()
             _cov.switch_context(_import_ctx_stack[-1] if _import_ctx_stack else _ctx[0])
         _instrument_module(module)
+        if module.__name__ == "sqlglot.generator":
+            _patch_dispatch(module)
     def __getattr__(self, item):
         return getattr(self.inner, item)
 
@@ -321,7 +392,7 @@ def _flush_worker():
     with open(os.path.join(OUT, "worker-types-%s.json" % tag), "w") as f:
         json.dump(_types_out(), f)
     with open(os.path.join(OUT, "worker-attrs-%s.json" % tag), "w") as f:
-        json.dump({"reads": {k: sorted(v) for k, v in _attr_reads.items()}, "import": sorted(_import_reads), "instrumented": sorted(_instrumented), "dictkeys": _dict_keys}, f)
+        json.dump({"reads": {k: sorted(v) for k, v in _attr_reads.items()}, "import": sorted(_import_reads), "instrumented": sorted(_instrumented), "dictkeys": _dict_keys, "import_sites": sorted(_import_sites)}, f)
 
 def _run_in_ctx(ctx, fn, args, kwargs):
     """Executed in a worker: attribute the task to the test that submitted it."""
@@ -396,7 +467,7 @@ def pytest_sessionfinish(session, exitstatus):
     with open(os.path.join(OUT, "outcomes.json"), "w") as f:
         json.dump(_outcomes, f)
     with open(os.path.join(OUT, "attrs.json"), "w") as f:
-        json.dump({"reads": {k: sorted(v) for k, v in _attr_reads.items()}, "import": sorted(_import_reads), "instrumented": sorted(_instrumented), "dictkeys": _dict_keys}, f)
+        json.dump({"reads": {k: sorted(v) for k, v in _attr_reads.items()}, "import": sorted(_import_reads), "instrumented": sorted(_instrumented), "dictkeys": _dict_keys, "import_sites": sorted(_import_sites)}, f)
 
 def _types_out():
     out = {}
