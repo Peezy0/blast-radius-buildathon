@@ -85,6 +85,25 @@ def _zip(data: bytes, reg: Registry, res: Result, depth: int) -> bytes:
     return out.getvalue()
 
 
+def _zip_names_inplace(data: bytes, reg: Registry) -> bytes:
+    """For archives that cannot be rebuilt (e.g. password-protected members): rename members
+    in the local and central headers at the same length; member data is left untouched."""
+    buf = bytearray(data)
+    for sig, name_len_off, extra_off, hdr in ((b"PK\x03\x04", 26, 28, 30), (b"PK\x01\x02", 28, 30, 46)):
+        i = 0
+        while True:
+            j = data.find(sig, i)
+            if j < 0 or j + hdr > len(data):
+                break
+            i = j + 4
+            n = struct.unpack_from("<H", data, j + name_len_off)[0]
+            name = data[j + hdr:j + hdr + n]
+            new = reg.sub_bytes(name)
+            if new != name and len(new) == len(name):
+                buf[j + hdr:j + hdr + n] = new
+    return bytes(buf)
+
+
 def _tar(data: bytes, reg: Registry, res: Result, depth: int) -> bytes:
     src = tarfile.open(fileobj=io.BytesIO(data))
     out = io.BytesIO()
@@ -142,9 +161,14 @@ def process_bytes(data: bytes, name: str, reg: Registry, res: Result | None = No
             new = _tar(data, reg, res, depth)
         else:  # text, ole, binary
             new = reg.sub_bytes(data)
-    except Exception as exc:  # corrupt or truncated source: keep a copy whose plain parts are cleaned
+    except Exception as exc:  # corrupt, truncated or encrypted source
         res.notes.append(f"{kind}-error:{type(exc).__name__}")
-        new = reg.sub_bytes(data) if kind not in ("zip", "7z", "gzip") else data
+        if kind == "zip":
+            new = _zip_names_inplace(data, reg)
+        elif kind in ("7z", "gzip"):
+            new = data
+        else:
+            new = reg.sub_bytes(data)
     if new != data:
         res.changed = True
     return (new, res) if top else new

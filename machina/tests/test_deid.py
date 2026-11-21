@@ -110,6 +110,17 @@ class T(unittest.TestCase):
             self.assertNotIn("acme-robotics", i.filename.lower())
             self.assertEqual(self.reg.count_bytes(z.read(i)), 0)
 
+    def test_unrebuildable_zip_names_renamed_in_place(self):
+        from deid.process import _zip_names_inplace
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("Acme-Robotics__arm/part.step", "geometry" * 100)
+        new = _zip_names_inplace(buf.getvalue(), self.reg)
+        self.assertEqual(len(new), len(buf.getvalue()))
+        z = zipfile.ZipFile(io.BytesIO(new))
+        self.assertIsNone(z.testzip())
+        self.assertNotIn("acme-robotics", z.namelist()[0].lower())
+
     def test_step_header_discovery(self):
         step = b"HEADER;FILE_NAME('a.step','2020',('Jane Roe'),('Widget Works'),'pre','sys','');ENDSEC;"
         found = {v for v, _ in discover.from_step(step)}
