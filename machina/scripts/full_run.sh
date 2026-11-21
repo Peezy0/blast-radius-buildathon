@@ -12,6 +12,10 @@ JOBS="${JOBS:-$(nproc)}"
 MAXGB="${MAXGB:-15}"
 mkdir -p "$WORK" "$PRIVATE"
 run() { PYTHONPATH="$HERE" python3 -m deid "$@"; }
+# Preflight: every optional reader must be present, or some formats would silently fall back.
+python3 -c "import ahocorasick, py7zr, olefile, zopfli, pypdf, zstandard" 2>/dev/null \
+  || python3 -m pip install -q -r "$HERE/requirements.txt"
+python3 -c "import ahocorasick, py7zr, olefile, zopfli, pypdf, zstandard"
 
 curl -fsS -o "$WORK/manifest.tsv" https://machina-input.joinbuilders.org/manifest.tsv
 python3 "$HERE/scripts/plan_batches.py" --manifest "$WORK/manifest.tsv" --out "$WORK/batches" --max-gb "$MAXGB"

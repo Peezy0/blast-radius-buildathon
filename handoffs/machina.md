@@ -169,3 +169,10 @@
   Also 3-letter profile-path accounts (e.g. initials) are now replaced, context-only (paths only).
 - After: sample 0/0/0, 300-file 0/0/0, random-2 0 leftovers / 0 structure / 0 unreadable; 14 tests pass.
   `zstandard==0.23.0` added to requirements.
+
+## Update 2026-11-21 ~17:10 UTC (Claude)
+
+- `full_run.sh` preflight: imports every optional reader (pyahocorasick, py7zr, olefile, zopfli, pypdf, zstandard)
+  and installs requirements if one is missing, so a fresh container cannot silently fall back on some formats.
+- Third random 400-file corpus sample (seed 23): 0 leftovers, 0 structure problems, 0 unreadable PDFs; residual
+  scan shows only pseudonyms, generic accounts and part-name false positives. No new gap found.
