@@ -17,13 +17,24 @@ curl -fsS -o "$WORK/manifest.tsv" https://machina-input.joinbuilders.org/manifes
 python3 "$HERE/scripts/plan_batches.py" --manifest "$WORK/manifest.tsv" --out "$WORK/batches" --max-gb "$MAXGB"
 run discover --private "$PRIVATE" --manifest "$WORK/manifest.tsv"
 
+# Optional durable copy of the private dir (key, mapping, progress markers, reports).
+backup() { if [ -n "${BACKUP:-}" ]; then mkdir -p "$BACKUP" && cp -a "$PRIVATE"/. "$BACKUP"/; fi; }
+if [ -n "${BACKUP:-}" ] && [ -f "$BACKUP/secret.key" ] && [ ! -f "$PRIVATE/secret.key" ]; then
+  cp -a "$BACKUP"/. "$PRIVATE"/   # resume after the container was replaced
+fi
+
 if [ "${SKIP_PASS1:-0}" != 1 ]; then
   for b in "$WORK"/batches/*.tsv; do
-    python3 "$HERE/scripts/fetch_batch.py" --batch "$b" --dest "$WORK/in"
+    name=$(basename "$b" .tsv)
+    [ -f "$PRIVATE/discovered-$name" ] && continue
+    python3 "$HERE/scripts/fetch_batch.py" --batch "$b" --dest "$WORK/in" || true
     run discover --private "$PRIVATE" --input "$WORK/in" --jobs "$JOBS"
     rm -rf "$WORK/in"
+    touch "$PRIVATE/discovered-$name"
+    backup
   done
 fi
+[ "${PASS1_ONLY:-0}" = 1 ] && { echo "pass 1 complete"; exit 0; }
 
 for b in "$WORK"/batches/*.tsv; do
   name=$(basename "$b" .tsv)
@@ -38,5 +49,6 @@ for b in "$WORK"/batches/*.tsv; do
   fi
   rm -rf "$WORK/in" "$WORK/corpus"
   touch "$PRIVATE/done-$name"
+  backup
 done
 echo "all batches processed"

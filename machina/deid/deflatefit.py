@@ -88,14 +88,33 @@ def fit(raw: bytes, target: int) -> bytes | None:
     got = _fit_tail(raw, target)
     if got is not None:
         return got
-    # Small sections: prepend empty stored blocks (5 bytes each) to a finished stream.
-    for st in _finished(raw):
-        r = target - len(st)
-        if r >= 0 and r % 5 == 0:
-            stream = EMPTY_STORED * (r // 5) + st
-            if _verify(stream, raw):
-                return stream
+    # Small sections: prepend empty blocks to a finished stream. Empty stored blocks
+    # add 5 bytes each; m empty fixed blocks add 10*m bits, applied by shifting the
+    # whole bit stream (valid because deflate blocks need no byte alignment, and any
+    # stored block inside would fail verification).
+    finished = list(_finished(raw))
+    for m in range(0, 5):
+        for st in finished:
+            for shifted in ([st] if m == 0 else _shift_prepend_fixed(st, m)):
+                r = target - len(shifted)
+                if r >= 0 and r % 5 == 0:
+                    stream = EMPTY_STORED * (r // 5) + shifted
+                    if _verify(stream, raw):
+                        return stream
     return None
+
+
+def _shift_prepend_fixed(stream: bytes, m: int) -> list[bytes]:
+    """Prefix ``stream`` with m empty, non-final fixed-Huffman blocks (10 bits each)."""
+    nbits = 10 * m
+    value = int.from_bytes(stream, "little") << nbits  # LSB-first bit order
+    # each empty fixed block: BFINAL=0, BTYPE=01 (bits 0,1,0 LSB-first => value 0b010), EOB=0000000
+    for i in range(m):
+        value |= 0b010 << (10 * i)
+    nbytes = (len(stream) * 8 + nbits + 7) // 8
+    full = value.to_bytes(nbytes, "little")
+    # the source's last byte carried padding bits, so one byte fewer may suffice
+    return [full[:-1], full] if full.endswith(b"\x00") else [full]
 
 
 def _fit_tail(raw: bytes, target: int) -> bytes | None:
