@@ -136,6 +136,23 @@ class CovSelectTests(unittest.TestCase):
             "Box": {"HOOKS": {"keys": ["'a'", "'b'"], "all": 6, "by": {"'a'": 2, "'b'": 3}}}}
         self.assertEqual(self.sel(SRC.replace('"b": lambda x: x * 2', '"b": helper(2)')), {0, 1, 5})
 
+    def test_boundary_swap_uses_equal_operand_tests(self):
+        self.map["files"]["pkg/box.py"]["cmp"] = {"15:11": 2}
+        self.assertEqual(self.sel(SRC.replace("if n > LIMIT", "if n >= LIMIT")), {2})
+
+    def test_boundary_swap_never_equal_selects_nothing(self):
+        self.map["files"]["pkg/box.py"]["cmp"] = {}
+        self.assertEqual(self.sel(SRC.replace("if n > LIMIT", "if n >= LIMIT")), set())
+
+    def test_boundary_swap_without_evidence_uses_lines(self):
+        self.assertEqual(self.sel(SRC.replace("if n > LIMIT", "if n >= LIMIT")), {0, 1})
+        self.map["files"]["pkg/box.py"]["cmp"] = {"15:11": None}
+        self.assertEqual(self.sel(SRC.replace("if n > LIMIT", "if n >= LIMIT")), {0, 1})
+
+    def test_direction_flip_is_not_a_twin(self):
+        self.map["files"]["pkg/box.py"]["cmp"] = {}
+        self.assertEqual(self.sel(SRC.replace("if n > LIMIT", "if n < LIMIT")), {0, 1})
+
     def test_fixture(self):
         p = patch("SELECT 1;\n", "SELECT 2;\n", "tests/fixtures/f.sql")
         self.assertEqual(select(p, self.map), {4})

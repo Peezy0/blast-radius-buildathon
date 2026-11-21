@@ -56,6 +56,11 @@ _CUR_INIT = None
 _import_reads = set()
 _import_depth = [0]
 _CUR = [_attr_reads.setdefault("collect", set())]
+# comparison infection evidence: node ids where `<`/`<=` (or `>`/`>=`) would
+# differ (operands equal) or where `is` and `==` would differ, per context
+_cmp_obs = {}
+_CMPCUR = [_cmp_obs.setdefault("collect", set())]
+_cmp_files = set()
 
 class _AttrRec:
     __slots__ = ("key", "value")
@@ -318,7 +323,11 @@ class _Loader(importlib.abc.Loader):
         _import_ctx_stack.append("import:" + module.__name__)
         _cov.switch_context(_import_ctx_stack[-1])
         try:
-            self.inner.exec_module(module)
+            code = _instrumented_code(self.inner, module)
+            if code is None:
+                self.inner.exec_module(module)
+            else:
+                exec(code, module.__dict__)
         finally:
             _import_depth[0] -= 1
             _import_ctx_stack.pop()
@@ -328,6 +337,118 @@ class _Loader(importlib.abc.Loader):
             _patch_dispatch(module)
     def __getattr__(self, item):
         return getattr(self.inner, item)
+
+def _cmp_mark(nid):
+    (_import_cmp if _import_depth[0] else _CMPCUR[0]).add(nid)
+
+_import_cmp = set()
+
+def _brc_lt(nid, a, b):
+    r = a < b
+    if not r:
+        try:
+            if a == b: _cmp_mark(nid)
+        except Exception:
+            _cmp_mark(nid)
+    return r
+
+def _brc_le(nid, a, b):
+    r = a <= b
+    if r:
+        try:
+            if a == b: _cmp_mark(nid)
+        except Exception:
+            _cmp_mark(nid)
+    return r
+
+def _brc_gt(nid, a, b):
+    r = a > b
+    if not r:
+        try:
+            if a == b: _cmp_mark(nid)
+        except Exception:
+            _cmp_mark(nid)
+    return r
+
+def _brc_ge(nid, a, b):
+    r = a >= b
+    if r:
+        try:
+            if a == b: _cmp_mark(nid)
+        except Exception:
+            _cmp_mark(nid)
+    return r
+
+def _brc_eq(nid, a, b):
+    r = a == b
+    try:
+        if bool(r) != (a is b): _cmp_mark(nid)
+    except Exception:
+        _cmp_mark(nid)
+    return r
+
+def _brc_ne(nid, a, b):
+    r = a != b
+    try:
+        if bool(r) != (a is not b): _cmp_mark(nid)
+    except Exception:
+        _cmp_mark(nid)
+    return r
+
+def _brc_is(nid, a, b):
+    r = a is b
+    try:
+        if bool(a == b) != r: _cmp_mark(nid)
+    except Exception:
+        _cmp_mark(nid)
+    return r
+
+def _brc_isnot(nid, a, b):
+    r = a is not b
+    try:
+        if bool(a != b) != r: _cmp_mark(nid)
+    except Exception:
+        _cmp_mark(nid)
+    return r
+
+def _instrumented_code(inner, module):
+    """Compile a sqlglot module with each single comparison routed through a
+    recorder (same line/column positions, so coverage is unaffected)."""
+    import ast
+    try:
+        name = module.__name__
+        path = inner.get_filename(name)
+        src = inner.get_source(name)
+    except Exception:
+        return None
+    if not path or not path.endswith(".py") or src is None:
+        return None
+    rel = os.path.relpath(os.path.realpath(path), ROOT)
+    ops = {ast.Lt: "_brc_lt", ast.LtE: "_brc_le", ast.Gt: "_brc_gt", ast.GtE: "_brc_ge",
+           ast.Eq: "_brc_eq", ast.NotEq: "_brc_ne", ast.Is: "_brc_is", ast.IsNot: "_brc_isnot"}
+    class T(ast.NodeTransformer):
+        def visit_Compare(self, node):
+            self.generic_visit(node)
+            if len(node.ops) != 1 or type(node.ops[0]) not in ops:
+                return node
+            right = node.comparators[0]
+            if isinstance(node.ops[0], (ast.Is, ast.IsNot)) and isinstance(right, ast.Constant) and right.value is None:
+                return node  # `is None` vs `== None` is handled statically
+            nid = "%s:%d:%d" % (rel, node.lineno, node.col_offset)
+            call = ast.Call(func=ast.Name(id=ops[type(node.ops[0])], ctx=ast.Load()),
+                            args=[ast.Constant(nid), node.left, right], keywords=[])
+            return ast.copy_location(call, node)
+    try:
+        tree = T().visit(ast.parse(src, path))
+        ast.fix_missing_locations(tree)
+        code = compile(tree, path, "exec", dont_inherit=True)
+    except Exception:
+        return None
+    g = module.__dict__
+    for fname in ops.values():
+        g[fname] = globals()[fname]
+    _cmp_files.add(rel)
+    return code
 
 class _Finder(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path, target=None):
@@ -380,6 +501,7 @@ def _switch(name):
         # per-class dispatch cache: clear so every test re-reads TRANSFORMS
         gen._DISPATCH_CACHE.clear()
     _CUR[0] = _attr_reads.setdefault(name, set())
+    _CMPCUR[0] = _cmp_obs.setdefault(name, set())
     _ctx[0] = name
     _cov.switch_context(name)
 
@@ -391,6 +513,8 @@ def _flush_worker():
         json.dump({k: sorted(v) for k, v in _opens.items()}, f)
     with open(os.path.join(OUT, "worker-types-%s.json" % tag), "w") as f:
         json.dump(_types_out(), f)
+    with open(os.path.join(OUT, "worker-cmp-%s.json" % tag), "w") as f:
+        json.dump(_cmp_out(), f)
     with open(os.path.join(OUT, "worker-attrs-%s.json" % tag), "w") as f:
         json.dump({"reads": {k: sorted(v) for k, v in _attr_reads.items()}, "import": sorted(_import_reads), "instrumented": sorted(_instrumented), "dictkeys": _dict_keys, "import_sites": sorted(_import_sites)}, f)
 
@@ -466,8 +590,14 @@ def pytest_sessionfinish(session, exitstatus):
         json.dump(_types_out(), f)
     with open(os.path.join(OUT, "outcomes.json"), "w") as f:
         json.dump(_outcomes, f)
+    with open(os.path.join(OUT, "cmp.json"), "w") as f:
+        json.dump(_cmp_out(), f)
     with open(os.path.join(OUT, "attrs.json"), "w") as f:
         json.dump({"reads": {k: sorted(v) for k, v in _attr_reads.items()}, "import": sorted(_import_reads), "instrumented": sorted(_instrumented), "dictkeys": _dict_keys, "import_sites": sorted(_import_sites)}, f)
+
+def _cmp_out():
+    return {"obs": {k: sorted(v) for k, v in _cmp_obs.items() if v},
+            "import": sorted(_import_cmp), "files": sorted(_cmp_files)}
 
 def _types_out():
     out = {}

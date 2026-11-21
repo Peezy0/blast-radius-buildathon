@@ -18,7 +18,8 @@ while [ $# -gt 0 ]; do
     cp "$f" "$OUT/.coverage.$(basename "$f" | sed 's/^\.coverage\.\{0,1\}//')run$k"
   done
   [ $covonly = 1 ] && continue
-  for kind in attrs opens types; do
+  for kind in attrs opens types cmp; do
+    [ -e "$R/$kind.json" ] || continue
     cp "$R/$kind.json" "$OUT/worker-$kind-run$k.json"
     for f in "$R"/worker-$kind-*.json; do
       [ -e "$f" ] && cp "$f" "$OUT/worker-$kind-run$k-$(basename "$f" | sed "s/^worker-$kind-//")"

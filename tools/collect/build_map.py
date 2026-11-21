@@ -195,6 +195,23 @@ def instantiators_of_module(rel):
         s |= inst.get(m + ":" + q, set())
     return s
 
+# ---- comparison infection evidence (br_collect comparison recorder) ----
+cmp_tests = collections.defaultdict(set)   # "rel:line:col" -> tests
+cmp_import = set()
+cmp_files = set()
+for fn in sorted(os.listdir(cov_dir)):
+    if fn == "cmp.json" or fn.startswith("worker-cmp-"):
+        d = json.load(open(os.path.join(cov_dir, fn)))
+        cmp_files.update(d.get("files", []))
+        cmp_import.update(d.get("import", []))
+        for ctx, nids in d.get("obs", {}).items():
+            ts = ctx_tests(ctx)
+            if ts is None:
+                cmp_import.update(nids)
+                continue
+            for n in nids:
+                cmp_tests[n] |= ts
+
 # ---- class data-attribute reads ----
 attr_reads = collections.defaultdict(set)
 import_keys = set()
@@ -577,6 +594,10 @@ for rel, src in files.items():
         },
         "attrs": attrs,
         "dictkeys": dk,
+        "cmp": None if rel not in cmp_files else {
+            n[len(rel) + 1:]: (None if n in cmp_import else sid(cmp_tests.get(n, set())))
+            for n in set(cmp_tests) | cmp_import if n.startswith(rel + ":")
+        },
         "source": src,
         "lines": {str(l): sid(ts) for l, ts in sorted(by_line.items()) if ts},
         "module": sid(module_tests),

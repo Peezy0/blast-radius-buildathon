@@ -543,6 +543,52 @@ def _dict_value_tests(rec, oidx, nidx, old_line, new_line, attr_ok):
     return out
 
 
+_CMP_TWINS = {(ast.Lt, ast.LtE), (ast.LtE, ast.Lt), (ast.Gt, ast.GtE), (ast.GtE, ast.Gt),
+              (ast.Is, ast.Eq), (ast.Eq, ast.Is), (ast.IsNot, ast.NotEq), (ast.NotEq, ast.IsNot)}
+
+
+def _cmp_swap_tests(rec, oidx, nidx, old_line, new_line):
+    """One comparison operator swapped with its twin (< <=, > >=, is ==,
+    is not !=), everything else identical: only tests in which that comparison
+    saw equal operands (or `is` and `==` disagreeing) can observe it. None when
+    the rule does not apply."""
+    cmp = rec.get("cmp")
+    if cmp is None:
+        return None
+    so, sn = oidx.stmt(old_line), nidx.stmt(new_line)
+    if not so or not sn:
+        return None
+    lo, ln = list(ast.walk(so[2])), list(ast.walk(sn[2]))
+    if len(lo) != len(ln):
+        return None
+    diff = [i for i, (a, b) in enumerate(zip(lo, ln)) if type(a) is not type(b)]
+    if len(diff) != 1 or not isinstance(lo[diff[0]], ast.cmpop):
+        return None
+    oop, nop = lo[diff[0]], ln[diff[0]]
+    if (type(oop), type(nop)) not in _CMP_TWINS:
+        return None
+    node = next((n for n in lo if isinstance(n, ast.Compare) and any(o is oop for o in n.ops)), None)
+    if node is None or len(node.ops) != 1:
+        return None
+    r = node.comparators[0]
+    if isinstance(r, ast.Constant) and r.value is None:
+        return None  # not recorded (`is None` has its own rule)
+    # everything except the operator must be identical
+    nnode = next(n for n in ln if isinstance(n, ast.Compare) and any(o is nop for o in n.ops))
+    saved = nnode.ops
+    nnode.ops = [type(oop)()]
+    same = ast.dump(so[2]) == ast.dump(sn[2])
+    nnode.ops = saved
+    if not same:
+        return None
+    key = "%d:%d" % (node.lineno, node.col_offset)
+    if key not in cmp:
+        return set()  # executed or not, the two operators never disagreed
+    if cmp[key] is None:
+        return None  # disagreed while modules were importing
+    return set(rec["sets"][cmp[key]])
+
+
 def select_file(rec, hunks):
     source = rec["source"]
     new_source, deleted, added = apply(source, hunks)
@@ -585,7 +631,9 @@ def select_file(rec, hunks):
                 if lam.end_lineno > lam.lineno:
                     out |= _import_extra(rec, lam.lineno + 1, lam.end_lineno)
             else:
-                dv = _dict_value_tests(rec, oidx, nidx, paired, new_line, attr_ok)
+                dv = _cmp_swap_tests(rec, oidx, nidx, paired, new_line)
+                if dv is None:
+                    dv = _dict_value_tests(rec, oidx, nidx, paired, new_line, attr_ok)
                 out |= dv if dv is not None else _old_line_tests(rec, oidx, paired, nidx, attr_ok)
             continue
         if _is_noop_line(new_lines[new_line - 1], new_line, new_spans):
