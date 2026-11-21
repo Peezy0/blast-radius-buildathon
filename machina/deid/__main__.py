@@ -169,6 +169,25 @@ def _image_meta_hits(data, reg):
     return 0 if _image(data, reg) == data else 1
 
 
+def _pdf_ok(data: bytes) -> bool:
+    """Parse the PDF and read the first pages' text: catches broken object streams,
+    xref offsets and content streams (a source PDF can fail too: compare with the input)."""
+    import io
+    import logging
+    try:
+        import pypdf
+    except ImportError:
+        return True
+    logging.getLogger("pypdf").setLevel(logging.CRITICAL)
+    try:
+        r = pypdf.PdfReader(io.BytesIO(data), strict=False)
+        for page in r.pages[:3]:
+            page.extract_text()
+        return True
+    except Exception:
+        return False
+
+
 def cmd_verify(a):
     """Count remaining original identities (plain, UTF-16, inside SolidWorks sections)
     and check SolidWorks/ZIP structure in the output."""
@@ -176,7 +195,7 @@ def cmd_verify(a):
     import zipfile
     reg = Registry(a.private)
     root = Path(a.output)
-    leaks, struct_bad, n = Counter(), [], 0
+    leaks, struct_bad, pdf_bad, n = Counter(), [], [], 0
     for p in iter_files(root):
         n += 1
         rel = p.relative_to(root).as_posix()
@@ -188,6 +207,9 @@ def cmd_verify(a):
         if kind == "swx":
             if swfile.check(data)["valid_sections"] == 0:
                 struct_bad.append((rel, "no valid sections"))
+        elif kind == "pdf":
+            if not _pdf_ok(data):
+                pdf_bad.append(rel)
         elif kind == "zip":
             try:
                 bad = zipfile.ZipFile(io.BytesIO(data)).testzip()
@@ -197,8 +219,10 @@ def cmd_verify(a):
                 struct_bad.append((rel, type(e).__name__))
         if c:
             leaks[kind] += c
-    out = {"files": n, "remaining_identity_hits_by_kind": leaks, "structure_problems": len(struct_bad)}
-    Path(a.private, "verify-report.json").write_text(json.dumps({**out, "problems": struct_bad}, indent=1))
+    out = {"files": n, "remaining_identity_hits_by_kind": leaks, "structure_problems": len(struct_bad),
+           "pdf_unreadable": len(pdf_bad)}
+    Path(a.private, "verify-report.json").write_text(
+        json.dumps({**out, "problems": struct_bad, "pdf_unreadable_files": pdf_bad}, indent=1))
     print(json.dumps(out, indent=1))
 
 

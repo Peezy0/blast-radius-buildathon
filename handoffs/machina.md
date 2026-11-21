@@ -71,3 +71,11 @@
 - Gate: official sample 6 leftovers (all in the unreadable truncated `.7z` copy), 0 structure problems;
   300-file batch 0 / 0; 12 unit tests pass.
 - Still waiting on Prince: token file + upload address.
+
+## Update 2026-11-21 ~07:15 UTC (Claude)
+
+- This commit: `verify` also reports `pdf_unreadable` (pypdf parse + text of the first 3 pages), so the
+  PDF-syntax class of bug fixed in 3f83b70 now shows up in every batch report. Cost ≈ 0.1–0.5 s per PDF.
+- Proof it catches the bug: old output of the 55 problem files → 20 unreadable; current code → 0
+  (originals → 0). Gate: sample 6 leftovers / 0 structure / 0 unreadable; 300-file batch 0 / 0 / 0. Tests pass.
+- Still waiting on Prince: token file + upload address.
