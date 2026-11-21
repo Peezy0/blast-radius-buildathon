@@ -124,3 +124,16 @@
   Sample SolidWorks: 777 changed sections, 0 unfit.
 - Docs updated (README/FEASIBILITY limits), `pypdf` added to requirements (used by the PDF fallback and verify).
 - Still waiting on Prince: token file + upload address.
+
+## Update 2026-11-21 ~12:35 UTC (Claude) — submission readiness
+
+- Gap found: the challenge requires `code/` and `README.txt` (run instructions, limitations, exceptions by
+  final path) in every attempt folder, and `full_run.sh` uploaded only `corpus/`. New `scripts/make_extras.py`
+  builds both (paths rendered with the same pseudonyms; tested: 0 identity hits in the README), and
+  `full_run.sh` uploads them with the official `upload.py --code/--readme` after the last batch.
+- Pass-2 prep (private, reversible renames only): old batch 000–001 markers/reports renamed `old-list-*`, their
+  old output moved aside (kept, never uploaded). Disk ≈ 33 GB free, so pass 2 runs with `MAXGB=8`
+  (21 whole-folder batches, peak ≈ 17 GB). `upload.py` placed in WORK.
+- Command when the token file and address exist (Codex submits the address afterwards):
+  `WORK=/tmp/claude-0/mach/work PRIVATE=/tmp/claude-0/mach/private BACKUP=/mnt/project-files/machina-private
+   MAXGB=8 SKIP_PASS1=1 DEST=<gs://…/attempt-1/> TOKEN_FILE=<file> bash scripts/full_run.sh`

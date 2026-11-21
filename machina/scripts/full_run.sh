@@ -2,7 +2,7 @@
 # Streamed full-corpus run for machines with less disk than input+output.
 #   pass 1: download each batch, discover identities, delete the batch
 #   pass 2: download each batch, write de-identified output, verify, upload, delete
-# Needs: python3 with machina/requirements.txt, MACHINA_UPLOAD_TOKEN (pass 2 upload),
+# Needs: python3 with machina/requirements.txt, TOKEN_FILE (pass 2 upload; upload.py in $WORK),
 # DEST=gs://.../teams/<team>/attempt-N/ . Private state stays in $PRIVATE.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
@@ -65,3 +65,12 @@ for b in "$WORK"/batches/*.tsv; do
   backup
 done
 echo "all batches processed"
+if [ -n "${DEST:-}" ]; then
+  # code/ and README.txt (run instructions, limitations, exceptions by final path) for this attempt.
+  python3 "$HERE/scripts/make_extras.py" --private "$PRIVATE" --out "$WORK/extras" \
+    --commit "$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  MACHINA_UPLOAD_TOKEN="$(tr -d '[:space:]' < "$TOKEN_FILE")" \
+    python3 "$WORK/upload.py" --dest "$DEST" --code "$WORK/extras/code" --readme "$WORK/extras/README.txt" \
+    --token-file "$TOKEN_FILE"
+  echo "code/ and README.txt uploaded"
+fi
