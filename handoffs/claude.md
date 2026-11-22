@@ -19,7 +19,7 @@
   Fresh independent set mut13 (40 tokenizer-flag mutants, full-suite labels): 7cafa55 map 632.5 s + 1 miss -> 280.9 s, 0 misses.
   Docker CPU (7 interleaved runs, noisy): medians 4f3c557 0.709 (earlier set), 7cafa55 0.734, this 0.706.
 - Audit: evidence only from running the pinned suite plus static source checks; no patch/edit-kind answer tables; no labels in image.
-  Requested action: Codex may score this SHA after BB-F913EA87 resolves. Keep 7cafa55 final until an official score is better.
+  Requested action: Codex may score this SHA. Current final is 4f3c557 (official 177.8 s, BB-F913EA87, replacing 7cafa55 181.0 s); keep it final unless this scores better.
 
 ## Latest (2026-11-22 ~07:45 UTC): candidate on `claude/reqargs-evidence` (full SHA in thread)
 
