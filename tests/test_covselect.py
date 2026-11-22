@@ -149,6 +149,47 @@ class CovSelectTests(unittest.TestCase):
         self.map["files"]["pkg/box.py"]["cmp"] = {"15:11": None}
         self.assertEqual(self.sel(SRC.replace("if n > LIMIT", "if n >= LIMIT")), {0, 1})
 
+    def _boolsrc(self, old):
+        src = SRC.replace("if n > LIMIT:", old)
+        self.map["files"]["pkg/box.py"]["source"] = src
+        return src
+
+    def test_and_or_swap_in_condition_uses_evidence(self):
+        src = self._boolsrc("if n > LIMIT and n:")
+        self.map["files"]["pkg/box.py"]["cmp"] = {"B:15:11": 2}
+        self.assertEqual(select(patch(src, src.replace(" and n:", " or n:")), self.map), {2})
+        self.map["files"]["pkg/box.py"]["cmp"] = {}
+        self.assertEqual(select(patch(src, src.replace(" and n:", " or n:")), self.map), set())
+
+    def test_and_or_swap_without_evidence_uses_lines(self):
+        src = self._boolsrc("if n > LIMIT and n:")
+        new = src.replace(" and n:", " or n:")
+        self.assertEqual(select(patch(src, new), self.map), {0, 1})
+        self.map["files"]["pkg/box.py"]["cmp"] = {"B:15:11": None}
+        self.assertEqual(select(patch(src, new), self.map), {0, 1})
+
+    def test_and_or_swap_outside_condition_uses_lines(self):
+        src = self._boolsrc("if (n > LIMIT and n) == 1:")
+        self.map["files"]["pkg/box.py"]["cmp"] = {}
+        new = src.replace(" and n)", " or n)")
+        self.assertEqual(select(patch(src, new), self.map), {0, 1})
+
+    def test_and_or_swap_of_second_boolop_uses_its_own_key(self):
+        src = self._boolsrc("if not (n and LIMIT) and (n > 0 and n):")
+        # outer BoolOp at col 11, `n > 0 and n` at col 34: only the latter swapped
+        self.map["files"]["pkg/box.py"]["cmp"] = {"B:15:11": 3}
+        new = src.replace("(n > 0 and n)", "(n > 0 or n)")
+        self.assertEqual(select(patch(src, new), self.map), {0, 1})  # not in a bool context
+        new = src.replace("(n and LIMIT)", "(n or LIMIT)")
+        self.map["files"]["pkg/box.py"]["cmp"] = {"B:15:11": 3, "B:15:16": 2}
+        self.assertEqual(select(patch(src, new), self.map), {2})
+
+    def test_second_comparison_swap_uses_its_own_key(self):
+        src = self._boolsrc("if n > 0 and n > LIMIT:")
+        self.map["files"]["pkg/box.py"]["cmp"] = {"15:11": 3, "15:21": 2}
+        new = src.replace("n > LIMIT", "n >= LIMIT")
+        self.assertEqual(select(patch(src, new), self.map), {2})
+
     def test_direction_flip_is_not_a_twin(self):
         self.map["files"]["pkg/box.py"]["cmp"] = {}
         self.assertEqual(self.sel(SRC.replace("if n > LIMIT", "if n < LIMIT")), {0, 1})

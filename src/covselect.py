@@ -547,46 +547,108 @@ _CMP_TWINS = {(ast.Lt, ast.LtE), (ast.LtE, ast.Lt), (ast.Gt, ast.GtE), (ast.GtE,
               (ast.Is, ast.Eq), (ast.Eq, ast.Is), (ast.IsNot, ast.NotEq), (ast.NotEq, ast.IsNot)}
 
 
+def _walk_parents(tree):
+    """ast.walk order (breadth first) with each node's parent index, so that
+    shared operator singletons (ast.Lt, ast.And, ...) can be told apart."""
+    nodes, parents, i = [tree], [None], 0
+    while i < len(nodes):
+        for c in ast.iter_child_nodes(nodes[i]):
+            nodes.append(c)
+            parents.append(i)
+        i += 1
+    return nodes, parents
+
+
+def _one_op_swap(so, sn, kind):
+    """The single position where old and new statements differ in node type,
+    if it is an operator of `kind`: (old nodes, parents, index), else None."""
+    lo, po = _walk_parents(so)
+    ln, _ = _walk_parents(sn)
+    if len(lo) != len(ln):
+        return None
+    diff = [i for i, (a, b) in enumerate(zip(lo, ln)) if type(a) is not type(b)]
+    if len(diff) != 1 or not isinstance(lo[diff[0]], kind):
+        return None
+    return lo, ln, po, diff[0]
+
+
+def _same_but_op(so, sn, nnode, field, old_op):
+    saved = getattr(nnode, field)
+    setattr(nnode, field, old_op)
+    same = ast.dump(so) == ast.dump(sn)
+    setattr(nnode, field, saved)
+    return same
+
+
+def _cmp_evidence(rec, key):
+    cmp = rec["cmp"]
+    if key not in cmp:
+        return set()  # executed or not, the two forms never disagreed
+    if cmp[key] is None:
+        return None  # could differ while modules were importing
+    return set(rec["sets"][cmp[key]])
+
+
 def _cmp_swap_tests(rec, oidx, nidx, old_line, new_line):
     """One comparison operator swapped with its twin (< <=, > >=, is ==,
     is not !=), everything else identical: only tests in which that comparison
     saw equal operands (or `is` and `==` disagreeing) can observe it. None when
     the rule does not apply."""
-    cmp = rec.get("cmp")
-    if cmp is None:
+    if rec.get("cmp") is None:
         return None
     so, sn = oidx.stmt(old_line), nidx.stmt(new_line)
     if not so or not sn:
         return None
-    lo, ln = list(ast.walk(so[2])), list(ast.walk(sn[2]))
-    if len(lo) != len(ln):
+    sw = _one_op_swap(so[2], sn[2], ast.cmpop)
+    if sw is None:
         return None
-    diff = [i for i, (a, b) in enumerate(zip(lo, ln)) if type(a) is not type(b)]
-    if len(diff) != 1 or not isinstance(lo[diff[0]], ast.cmpop):
+    lo, ln, po, i = sw
+    if (type(lo[i]), type(ln[i])) not in _CMP_TWINS:
         return None
-    oop, nop = lo[diff[0]], ln[diff[0]]
-    if (type(oop), type(nop)) not in _CMP_TWINS:
-        return None
-    node = next((n for n in lo if isinstance(n, ast.Compare) and any(o is oop for o in n.ops)), None)
-    if node is None or len(node.ops) != 1:
+    node, nnode = lo[po[i]], ln[po[i]]
+    if not isinstance(node, ast.Compare) or len(node.ops) != 1:
         return None
     r = node.comparators[0]
     if isinstance(r, ast.Constant) and r.value is None:
         return None  # not recorded (`is None` has its own rule)
-    # everything except the operator must be identical
-    nnode = next(n for n in ln if isinstance(n, ast.Compare) and any(o is nop for o in n.ops))
-    saved = nnode.ops
-    nnode.ops = [type(oop)()]
-    same = ast.dump(so[2]) == ast.dump(sn[2])
-    nnode.ops = saved
-    if not same:
+    if not _same_but_op(so[2], sn[2], nnode, "ops", [type(lo[i])()]):
         return None
-    key = "%d:%d" % (node.lineno, node.col_offset)
-    if key not in cmp:
-        return set()  # executed or not, the two operators never disagreed
-    if cmp[key] is None:
-        return None  # disagreed while modules were importing
-    return set(rec["sets"][cmp[key]])
+    return _cmp_evidence(rec, "%d:%d" % (node.lineno, node.col_offset))
+
+
+def _bool_context(node, parent):
+    """Mirror of the collector: a two-value BoolOp whose value is only used
+    for its truth (if/while/ternary/assert test, comprehension filter, `not`)."""
+    if not isinstance(node, ast.BoolOp) or len(node.values) != 2:
+        return False
+    if isinstance(parent, (ast.If, ast.While, ast.IfExp, ast.Assert)):
+        return parent.test is node
+    if isinstance(parent, ast.comprehension):
+        return any(t is node for t in parent.ifs)
+    if isinstance(parent, ast.UnaryOp):
+        return isinstance(parent.op, ast.Not) and parent.operand is node
+    return False
+
+
+def _boolop_swap_tests(rec, oidx, nidx, old_line, new_line):
+    """`a and b` <-> `a or b` used only for its truth, everything else
+    identical: only tests in which the two forms would have differed (or the
+    swapped form would have evaluated b) can observe it."""
+    if rec.get("cmp") is None:
+        return None
+    so, sn = oidx.stmt(old_line), nidx.stmt(new_line)
+    if not so or not sn:
+        return None
+    sw = _one_op_swap(so[2], sn[2], ast.boolop)
+    if sw is None:
+        return None
+    lo, ln, po, i = sw
+    node, nnode = lo[po[i]], ln[po[i]]
+    if po[po[i]] is None or not _bool_context(node, lo[po[po[i]]]):
+        return None
+    if not _same_but_op(so[2], sn[2], nnode, "op", type(lo[i])()):
+        return None
+    return _cmp_evidence(rec, "B:%d:%d" % (node.lineno, node.col_offset))
 
 
 def select_file(rec, hunks):
@@ -632,6 +694,8 @@ def select_file(rec, hunks):
                     out |= _import_extra(rec, lam.lineno + 1, lam.end_lineno)
             else:
                 dv = _cmp_swap_tests(rec, oidx, nidx, paired, new_line)
+                if dv is None:
+                    dv = _boolop_swap_tests(rec, oidx, nidx, paired, new_line)
                 if dv is None:
                     dv = _dict_value_tests(rec, oidx, nidx, paired, new_line, attr_ok)
                 out |= dv if dv is not None else _old_line_tests(rec, oidx, paired, nidx, attr_ok)
