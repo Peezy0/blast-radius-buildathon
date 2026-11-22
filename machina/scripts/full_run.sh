@@ -55,7 +55,7 @@ for b in "$WORK"/batches/*.tsv; do
   fi
   run apply --private "$PRIVATE" --input "$WORK/in" --output "$WORK/corpus" --jobs "$JOBS"
   cp "$PRIVATE/apply-report.json" "$PRIVATE/apply-report-$name.json"
-  run verify --private "$PRIVATE" --output "$WORK/corpus"
+  run verify --private "$PRIVATE" --output "$WORK/corpus" --jobs "$JOBS"
   cp "$PRIVATE/verify-report.json" "$PRIVATE/verify-report-$name.json"
   if [ -n "${DEST:-}" ]; then
     # Token comes from a file (never argv, chat or git); upload.py re-reads it when it expires.
