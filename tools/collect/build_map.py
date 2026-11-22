@@ -426,6 +426,112 @@ def _dict_base_ok(dkey):
         _bare_cache[rel] = _bare_definition_names(_src_tree(rel))
     return name not in _bare_cache[rel]
 
+SUBPROCESS_TESTS = {index[t] for t in index if t.endswith("::test_lazy_load")}
+
+# ---- required-argument evidence (br_reqargs run, optional) ----
+# A class's `required_args` is derived from its arg_types values when the class
+# is created and is read only by error_messages, which reports key k only when
+# argument k is missing. A value edit of key k therefore reaches exactly the
+# tests where error_messages ran on an instance of a class taking its arg_types
+# from that dict while argument k was missing.
+reqargs_missing = collections.defaultdict(set)   # (class key, arg key) -> tests
+reqargs_import = set()                            # pairs seen outside any test
+reqargs_users = collections.defaultdict(set)      # arg_types dict key -> class keys
+_rq_files = [os.path.join(cov_dir, f) for f in sorted(os.listdir(cov_dir)) if f.startswith("reqargs.json.")]
+for fn in _rq_files:
+    d = json.load(open(fn))
+    for cls, owner in d["owners"].items():
+        if owner is not None:
+            reqargs_users[owner].add(cls)
+    for ctx, pairs in d["missing"].items():
+        ts = ctx_tests(ctx)
+        for cls, k in pairs:
+            if ts is None:
+                reqargs_import.add((cls, k))
+            else:
+                reqargs_missing[(cls, k)] |= ts
+
+def _required_args_ok():
+    """`required_args` is assigned only by the derivation and read only inside
+    error_messages (checked over every sqlglot module and test file)."""
+    if not _rq_files:
+        return False
+    for rel in files:
+        tree = _src_tree(rel)
+        if tree is None:
+            return False
+        stack = [(tree, None)]
+        while stack:
+            node, fn = stack.pop()
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                fn = node.name
+            for ch in ast.iter_child_nodes(node):
+                stack.append((ch, fn))
+            name = node.attr if isinstance(node, ast.Attribute) else (
+                node.id if isinstance(node, ast.Name) else (node.value if isinstance(node, ast.Constant) else None))
+            if name != "required_args":
+                continue
+            if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Store) and fn == "__init_subclass__":
+                continue
+            if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load) and fn == "error_messages":
+                continue
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) and fn is None:
+                continue  # class-level default (every subclass re-derives it)
+            return False
+    return True
+
+_RQ_OK = None
+def _reqargs_site(site):
+    """True when `site` is `cls.required_args = {k for k, v in cls.<D>.items() if v}`."""
+    global _RQ_OK
+    path, _, line = site.rpartition(":")
+    try:
+        line = int(line)
+    except ValueError:
+        return False
+    tree = _src_tree(os.path.relpath(path, root))
+    if tree is None:
+        return False
+    for st in ast.walk(tree):
+        if not (isinstance(st, ast.Assign) and st.lineno <= line <= st.end_lineno):
+            continue
+        if not (len(st.targets) == 1 and isinstance(st.targets[0], ast.Attribute)
+                and st.targets[0].attr == "required_args" and isinstance(st.value, ast.SetComp)):
+            return False
+        v = st.value
+        if len(v.generators) != 1:
+            return False
+        g = v.generators[0]
+        ok = (isinstance(g.target, ast.Tuple) and len(g.target.elts) == 2
+              and all(isinstance(e, ast.Name) for e in g.target.elts)
+              and isinstance(v.elt, ast.Name) and v.elt.id == g.target.elts[0].id
+              and isinstance(g.iter, ast.Call) and isinstance(g.iter.func, ast.Attribute)
+              and g.iter.func.attr == "items" and len(g.ifs) == 1
+              and isinstance(g.ifs[0], ast.Name) and g.ifs[0].id == g.target.elts[1].id)
+        if not ok:
+            return False
+        if _RQ_OK is None:
+            _RQ_OK = _required_args_ok()
+        return _RQ_OK
+    return False
+
+def reqargs_readers(dkey, tok):
+    users = reqargs_users.get(dkey)
+    if not users:
+        return None
+    out = set(SUBPROCESS_TESTS)
+    for cls in users:
+        ks = [k for (c, k) in reqargs_keys.get(cls, ()) if repr(k) == tok]
+        for k in ks:
+            if (cls, k) in reqargs_import:
+                return None
+            out |= reqargs_missing.get((cls, k), set())
+    return out
+
+reqargs_keys = collections.defaultdict(set)
+for (c, k) in list(reqargs_missing) + list(reqargs_import):
+    reqargs_keys[c].add((c, k))
+
 _kr_memo = {}
 def key_readers(dkey, tok):
     """Tests that can observe a change to dkey's value under key token tok, or
@@ -443,6 +549,12 @@ def key_readers(dkey, tok):
                 if not sites:
                     out = None; break
                 for site in sites:
+                    if rk.endswith("\x00*") and _reqargs_site(site):
+                        sub = reqargs_readers(dkey, tok)
+                        if sub is None:
+                            out = None; break
+                        out |= sub
+                        continue
                     tgt = _copy_target(site)
                     if tgt is None or tgt == dkey:
                         out = None; break
@@ -459,7 +571,6 @@ def key_readers(dkey, tok):
     _kr_memo[memo] = out
     return out
 
-SUBPROCESS_TESTS = {index[t] for t in index if t.endswith("::test_lazy_load")}
 def base_module_tests(rel):
     mt = tests_executing(rel) | instantiators_of_module(rel)
     for imp in importers.get(rel, ()):
