@@ -682,6 +682,33 @@ for _rel, _src in files.items():
             ML_IMPORTERS[_f].add(_rel)
 
 _FAIL_CACHE = {}
+def _lazy_dialect_tests():
+    """Tests whose own body imports a dialect lazily (function-level
+    `from sqlglot.dialects import X` or `sqlglot.dialects.X`): after another
+    test cached the class, coverage cannot see that they depend on the dialect
+    module importing, so they count as importers of every dialect module."""
+    out = set()
+    for rel in files:
+        if not rel.startswith("tests/"):
+            continue
+        tree = _src_tree(rel)
+        if tree is None:
+            continue
+        for fn in ast.walk(tree):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            lazy = any(
+                (isinstance(n, ast.ImportFrom) and n.module == "sqlglot.dialects")
+                or (isinstance(n, ast.Attribute) and isinstance(n.value, ast.Attribute)
+                    and n.value.attr == "dialects" and isinstance(n.value.value, ast.Name)
+                    and n.value.value.id == "sqlglot")
+                for n in ast.walk(fn))
+            if lazy:
+                out |= {i for tid, i in index.items()
+                        if tid.split("::")[0] == rel and tid.split("::")[-1].split("[")[0] == fn.name}
+    return out
+LAZY_DIALECT_TESTS = _lazy_dialect_tests()
+
 def tests_if_import_fails(modname_):
     """A module whose import breaks takes down every test that uses it,
     including every module (and test file) that imports it at module level,
@@ -692,6 +719,8 @@ def tests_if_import_fails(modname_):
     if f in _FAIL_CACHE:
         return _FAIL_CACHE[f]
     out = set(BASE_MT.get(f, set()))
+    if f.startswith("sqlglot/dialects/"):
+        out |= LAZY_DIALECT_TESTS
     seen, todo = {f}, [f]
     while todo:
         g = todo.pop()
@@ -730,6 +759,10 @@ for rel, src in files.items():
             s |= members.get(rel + "::" + parts[0], set())
         for mod in import_inst.get(m + ":" + q, ()):
             s |= tests_if_import_fails(mod)
+        if s and rel.startswith("sqlglot/"):
+            # class-level edits can break a dialect module's import through
+            # subclass creation (__init_subclass__), which lazy importers hit
+            s |= LAZY_DIALECT_TESTS
         class_tests[q] = s
     sets, set_ids = [], {}
     def sid(s):
