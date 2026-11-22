@@ -454,6 +454,187 @@ def _brc_bb(nid, isand, b):
         _cmp_mark(nid)
     return b
 
+# ---- whole-condition replay evidence ----
+# For each instrumented condition (if/while/ternary/assert test, comprehension
+# filter) every non-constant subexpression's value is summarised per
+# evaluation; the selector re-evaluates an edited condition on these values.
+_cond_obs = {}          # ctx -> {nid: set(tuples) | None (overflow/unknown)}
+_cond_import_by = {}    # "import:<module>" -> set(nids)
+_cond_nodes = set()     # nids of every instrumented condition
+_cond_stack = []
+_COND_CAP = 16
+
+def _summ(v, depth=0):
+    t = type(v)
+    if t is bool:
+        return ("b", v)
+    if t is int:
+        return ("i", v) if -2**53 < v < 2**53 else None
+    if t is float:
+        return ("f", v) if v == v and v not in (float("inf"), float("-inf")) else None
+    if t is str:
+        return ("s", v) if len(v) <= 64 else None
+    if v is None:
+        return ("n",)
+    if isinstance(v, enum.Enum):
+        try:
+            return ("e", type(v).__module__ + ":" + type(v).__qualname__ + "." + v.name)
+        except Exception:
+            return None
+    if (t is tuple or t is frozenset) and depth == 0 and len(v) <= 8:
+        items = [_summ(x, 1) for x in v]
+        if all(i is not None for i in items):
+            if t is frozenset:
+                items = sorted(items, key=repr)
+            return ("t" if t is tuple else "z", tuple(items))
+    return None
+
+_ENUM_S = {}
+
+def _opaque(v):
+    t = type(v)
+    if t is _Pre:
+        return v.s
+    if t is bool:
+        return ("b", v)
+    if t is str:
+        return ("s", v) if len(v) <= 64 else _opaque_slow(v)
+    if v is None:
+        return ("n",)
+    if t is int:
+        return ("i", v) if -2**53 < v < 2**53 else _opaque_slow(v)
+    if t is float:
+        return _opaque_slow(v)
+    if isinstance(v, enum.Enum):
+        try:
+            return _ENUM_S[v]
+        except KeyError:
+            r = _ENUM_S[v] = _summ(v) or ("o", True)
+            return r
+        except TypeError:
+            return _opaque_slow(v)
+    return _opaque_slow(v)
+
+def _opaque_slow(v):
+    s = _summ(v)
+    if s is not None:
+        return s
+    try:
+        return ("o", bool(v))
+    except Exception:
+        return ("o", None)
+
+_COND_BUDGET = 20000
+_cond_count = {}
+
+def _rcb(nid):
+    f = [nid, {}, False]
+    _cond_stack.append(f)
+    return f
+
+_IMMUT = {bool, int, str, type(None), float}
+
+def _rp(k, v):
+    if _cond_stack:
+        # immutable values are summarised later; anything else now (its
+        # truth could change before the condition finishes)
+        _cond_stack[-1][1][k] = v if (type(v) in _IMMUT or isinstance(v, enum.Enum)) else _Pre(_opaque_slow(v))
+    return v
+
+class _Pre:
+    __slots__ = ("s",)
+    def __init__(self, s):
+        self.s = s
+
+def _rce(f, v):
+    st = _cond_stack
+    while st:
+        top = st.pop()
+        if top is f:
+            break
+        f[2] = True  # an inner condition did not finish: values may be misplaced
+    nid = f[0]
+    if _import_depth[0]:
+        _cond_import_by.setdefault(_import_ctx_stack[-1] if _import_ctx_stack else "", set()).add(nid)
+        return v
+    ctx = _ctx[0]
+    obs = _cond_obs.get(ctx)
+    if obs is None:
+        obs = _cond_obs[ctx] = {}
+    cur = obs.get(nid, ())
+    if cur is None:
+        return v
+    ck = (ctx, nid)
+    n = _cond_count.get(ck, 0) + 1
+    _cond_count[ck] = n
+    if f[2] or n > _COND_BUDGET:
+        obs[nid] = None  # unknown: every edit of this condition selects the test
+        return v
+    d = f[1]
+    rec = [(0, _opaque(v))]
+    for k in sorted(d):
+        rec.append((k, _opaque(d[k])))
+    rec = tuple(rec)
+    if cur == ():
+        obs[nid] = {rec}
+    elif rec not in cur:
+        if len(cur) >= _COND_CAP:
+            obs[nid] = None
+        else:
+            cur.add(rec)
+    return v
+
+def _replay_pass(tree, rel):
+    """Wrap conditions for replay. Only BoolOp / UnaryOp / Compare nodes are
+    descended into; every other subexpression is an atom whose value is
+    summarised. Keys are BFS indices over that restricted tree (root = 0);
+    Constants are not wrapped. The selector rebuilds the same keys."""
+    import ast
+    STRUCT = (ast.BoolOp, ast.UnaryOp, ast.Compare)
+    def wrap_cond(test):
+        if not isinstance(test, STRUCT):
+            return test  # a bare atom: nothing to replay
+        order, q = [], [test]
+        while q:
+            n = q.pop(0)
+            order.append(n)
+            if isinstance(n, STRUCT):
+                q.extend(c for c in ast.iter_child_nodes(n) if isinstance(c, ast.expr))
+        key = {id(n): i for i, n in enumerate(order)}
+        nid = "%s:C:%d:%d" % (rel, test.lineno, test.col_offset)
+        def w(n):
+            if isinstance(n, STRUCT):
+                for field, val in ast.iter_fields(n):
+                    if isinstance(val, ast.expr):
+                        setattr(n, field, w(val))
+                    elif isinstance(val, list):
+                        setattr(n, field, [w(x) if isinstance(x, ast.expr) else x for x in val])
+            if n is test or isinstance(n, ast.Constant):
+                return n
+            return ast.copy_location(ast.Call(func=ast.Name(id="_rp", ctx=ast.Load()),
+                                              args=[ast.Constant(key[id(n)]), n], keywords=[]), n)
+        inner = w(test)
+        _cond_nodes.add(nid)
+        call = ast.Call(func=ast.Name(id="_rce", ctx=ast.Load()),
+                        args=[ast.Call(func=ast.Name(id="_rcb", ctx=ast.Load()), args=[ast.Constant(nid)], keywords=[]),
+                              inner], keywords=[])
+        return ast.copy_location(call, test)
+    class R(ast.NodeTransformer):
+        def visit_If(self, node):
+            self.generic_visit(node); node.test = wrap_cond(node.test); return node
+        visit_While = visit_If
+        visit_IfExp = visit_If
+        visit_Assert = visit_If
+        def visit_comprehension(self, node):
+            self.generic_visit(node); node.ifs = [wrap_cond(t) for t in node.ifs]; return node
+    return R().visit(tree)
+
+def _unwrap(t):
+    import ast
+    while isinstance(t, ast.Call) and isinstance(t.func, ast.Name) and t.func.id in ("_rce", "_rp"):
+        t = t.args[-1]
+    return t
+
 def _instrumented_code(inner, module):
     """Compile a sqlglot module with each single comparison routed through a
     recorder (same line/column positions, so coverage is unaffected)."""
@@ -470,7 +651,10 @@ def _instrumented_code(inner, module):
     ops = {ast.Lt: "_brc_lt", ast.LtE: "_brc_le", ast.Gt: "_brc_gt", ast.GtE: "_brc_ge",
            ast.Eq: "_brc_eq", ast.NotEq: "_brc_ne", ast.Is: "_brc_is", ast.IsNot: "_brc_isnot"}
     def cond(test):
-        if isinstance(test, ast.BoolOp) and len(test.values) == 2:
+        outer, test = test, _unwrap(test)
+        if not (isinstance(test, ast.BoolOp) and len(test.values) == 2):
+            return outer
+        if True:
             isand = isinstance(test.op, ast.And)
             nid = "%s:B:%d:%d" % (rel, test.lineno, test.col_offset)
             a, b = test.values
@@ -480,7 +664,7 @@ def _instrumented_code(inner, module):
                 ast.copy_location(ast.Call(func=ast.Name(id="_brc_bb", ctx=ast.Load()),
                                            args=[ast.Constant(nid), ast.Constant(isand), b], keywords=[]), b),
             ]
-        return test
+        return outer
     class T(ast.NodeTransformer):
         def visit_If(self, node):
             self.generic_visit(node); node.test = cond(node.test); return node
@@ -509,13 +693,13 @@ def _instrumented_code(inner, module):
                             args=[ast.Constant(nid), node.left, right], keywords=[])
             return ast.copy_location(call, node)
     try:
-        tree = T().visit(ast.parse(src, path))
+        tree = T().visit(_replay_pass(ast.parse(src, path), rel))
         ast.fix_missing_locations(tree)
         code = compile(tree, path, "exec", dont_inherit=True)
     except Exception:
         return None
     g = module.__dict__
-    for fname in list(ops.values()) + ["_brc_ba", "_brc_bb"]:
+    for fname in list(ops.values()) + ["_brc_ba", "_brc_bb", "_rcb", "_rp", "_rce"]:
         g[fname] = globals()[fname]
     _cmp_files.add(rel)
     return code
@@ -668,7 +852,11 @@ def pytest_sessionfinish(session, exitstatus):
 def _cmp_out():
     return {"obs": {k: sorted(v) for k, v in _cmp_obs.items() if v},
             "import": sorted(_import_cmp), "files": sorted(_cmp_files),
-            "import_by": {k: sorted(v) for k, v in _import_cmp_by.items()}}
+            "import_by": {k: sorted(v) for k, v in _import_cmp_by.items()},
+            "cond": {c: {n: (None if v is None else sorted(v, key=repr)) for n, v in d.items()}
+                     for c, d in _cond_obs.items() if d},
+            "cond_import_by": {k: sorted(v) for k, v in _cond_import_by.items()},
+            "cond_nodes": sorted(_cond_nodes)}
 
 def _types_out():
     out = {}
