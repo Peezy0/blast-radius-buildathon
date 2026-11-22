@@ -22,6 +22,8 @@ def per_test(run):
         if "/sqlglot/sqlglot/" not in path and not path.split("/src/sqlglot/")[-1].startswith("sqlglot/"):
             continue
         for line, ctxs in d.contexts_by_lineno(path).items():
+            if line < 1:
+                continue
             for ctx in ctxs:
                 parts = ctx.split("|")
                 if len(parts) >= 2 and parts[-1] == "call" and "::" in parts[-2]:

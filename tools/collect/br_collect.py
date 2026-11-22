@@ -455,10 +455,37 @@ def _brc_bb(nid, isand, b):
         _cmp_mark(nid)
     return b
 
-def _brd(nid, v, d):
-    # mark when the parameter equals the default constant (same type)
-    if v is d or (type(v) is type(d) and type(d) not in (bool, type(None)) and v == d):
-        _cmp_mark(nid)
+_DMON = {}       # code object -> [(param, default constant, nid)]
+_DMON_ON = [False]
+
+def _dmon_start(code, offset):
+    sp = _DMON.get(code)
+    if sp is None:
+        return
+    try:
+        loc = sys._getframe(1).f_locals
+    except Exception:
+        for _, _, nid in sp:
+            _cmp_mark(nid)
+        return
+    for p, d, nid in sp:
+        try:
+            v = loc[p]
+        except Exception:
+            _cmp_mark(nid)
+            continue
+        # held the default value (omitted, or passed equal): same type and ==
+        if v is d or (type(v) is type(d) and type(d) not in (bool, type(None)) and v == d):
+            _cmp_mark(nid)
+
+def _dmon_register(code, specs):
+    mon = sys.monitoring
+    if not _DMON_ON[0]:
+        mon.use_tool_id(4, "br_defaults")
+        mon.register_callback(4, mon.events.PY_START, _dmon_start)
+        _DMON_ON[0] = True
+    _DMON[code] = specs
+    mon.set_local_events(4, code, mon.events.PY_START)
 
 def _instrumented_code(inner, module):
     """Compile a sqlglot module with each single comparison routed through a
@@ -506,32 +533,20 @@ def _instrumented_code(inner, module):
         def visit_FunctionDef(self, node):
             self.generic_visit(node)
             # default-use evidence: a constant default only matters in calls
-            # where the parameter holds that value (omitted, or passed equal)
+            # where the parameter holds that value (omitted, or passed equal).
+            # Checked from a sys.monitoring PY_START callback, so the code and
+            # its line events are untouched.
             a = node.args
             pos = a.posonlyargs + a.args
             pairs = list(zip(pos[len(pos) - len(a.defaults):], a.defaults)) + \
                 [(p, d) for p, d in zip(a.kwonlyargs, a.kw_defaults) if d is not None]
-            checks = []
+            specs = []
             for p, d in pairs:
-                if not isinstance(d, ast.Constant) or type(d.value) not in (bool, int, str, float, bytes, type(None)):
-                    continue
-                nid = "%s:D:%d:%s" % (rel, node.lineno, p.arg)
-                checks.append(ast.Expr(ast.Call(func=ast.Name(id="_brd", ctx=ast.Load()),
-                                                args=[ast.Constant(nid), ast.Name(id=p.arg, ctx=ast.Load()),
-                                                      ast.Constant(d.value)], keywords=[])))
-            b = node.body
-            k = 1 if (b and isinstance(b[0], ast.Expr) and isinstance(b[0].value, ast.Constant)
-                      and isinstance(b[0].value.value, str)) else 0
-            if checks and len(b) > k:
-                # line 0: no source line gains a coverage event
-                for c in checks:
-                    for sub in ast.walk(c):
-                        sub.lineno = sub.end_lineno = 0
-                        sub.col_offset = sub.end_col_offset = 0
-                node.body = b[:k] + checks + b[k:]
-            elif checks:
-                for c in checks:
-                    _cmp_files_partial.add(c.value.args[0].value)
+                if isinstance(d, ast.Constant) and type(d.value) in (bool, int, str, float, bytes, type(None)):
+                    specs.append((p.arg, d.value, "%s:D:%d:%s" % (rel, node.lineno, p.arg)))
+            if specs:
+                first = min([node.lineno] + [x.lineno for x in node.decorator_list])
+                dspecs.setdefault((node.name, first), []).extend(specs)
             return node
         visit_AsyncFunctionDef = visit_FunctionDef
         def visit_Compare(self, node):
@@ -545,6 +560,7 @@ def _instrumented_code(inner, module):
             call = ast.Call(func=ast.Name(id=ops[type(node.ops[0])], ctx=ast.Load()),
                             args=[ast.Constant(nid), node.left, right], keywords=[])
             return ast.copy_location(call, node)
+    dspecs = {}
     try:
         tree = T().visit(ast.parse(src, path))
         ast.fix_missing_locations(tree)
@@ -552,8 +568,23 @@ def _instrumented_code(inner, module):
     except Exception:
         return None
     g = module.__dict__
-    for fname in list(ops.values()) + ["_brc_ba", "_brc_bb", "_brd"]:
+    for fname in list(ops.values()) + ["_brc_ba", "_brc_bb"]:
         g[fname] = globals()[fname]
+    if dspecs:
+        found = set()
+        todo = [code]
+        while todo:
+            c = todo.pop()
+            for k in c.co_consts:
+                if isinstance(k, type(c)):
+                    todo.append(k)
+            key = (c.co_name, c.co_firstlineno)
+            if key in dspecs and key not in found:
+                found.add(key)
+                _dmon_register(c, dspecs[key])
+        for key, sp in dspecs.items():
+            if key not in found:
+                _cmp_files_partial.update(n for _, _, n in sp)
     _cmp_files.add(rel)
     return code
 

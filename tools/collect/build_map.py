@@ -53,6 +53,8 @@ for path in data.measured_files():
     rel = os.path.relpath(path, root)
     by_line = collections.defaultdict(set)
     for line, ctxs in data.contexts_by_lineno(path).items():
+        if line < 1:
+            continue  # line 0: the collector's inserted evidence checks
         for ctx in ctxs:
             ts = ctx_tests(ctx)
             if ts is None:
@@ -257,11 +259,6 @@ def default_nodes(rel):
         pos = a.posonlyargs + a.args
         pairs = list(zip(pos[len(pos) - len(a.defaults):], a.defaults)) + \
             [(p, d) for p, d in zip(a.kwonlyargs, a.kw_defaults) if d is not None]
-        b = node.body
-        k = 1 if (b and isinstance(b[0], ast.Expr) and isinstance(b[0].value, ast.Constant)
-                  and isinstance(b[0].value.value, str)) else 0
-        if len(b) <= k:
-            continue
         for p, d in pairs:
             if isinstance(d, ast.Constant) and type(d.value) in (bool, int, str, float, bytes, type(None)):
                 out.append("D:%d:%s" % (node.lineno, p.arg))

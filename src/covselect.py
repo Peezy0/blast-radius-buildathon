@@ -662,9 +662,6 @@ def _default_value_tests(rec, oidx, nidx, old_line, new_line):
     lst[i] = dn
     if not same:
         return None
-    if len(fo.body) <= (1 if (isinstance(fo.body[0], ast.Expr) and isinstance(fo.body[0].value, ast.Constant)
-                              and isinstance(fo.body[0].value.value, str)) else 0):
-        return None  # not instrumented (docstring-only body)
     key = "D:%d:%s" % (fo.lineno, p.arg)
     if key not in rec["cmp"]:
         return None  # map built without default-use evidence for this function
