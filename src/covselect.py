@@ -582,16 +582,17 @@ def _same_but_op(so, sn, nnode, field, old_op):
 
 def _cmp_evidence(rec, key, node):
     """Tests that recorded the two forms disagreeing at `key`, plus tests
-    whose execution varies between runs wherever they execute the node."""
-    cmp = rec["cmp"]
-    if "unstable" not in rec:
+    whose execution of the node's lines varied between collection runs."""
+    cmp, unstable = rec["cmp"], rec.get("unstable")
+    if not isinstance(unstable, dict):
         return None
     if key in cmp and cmp[key] is None:
         return None  # could differ while modules were importing
     out = set(rec["sets"][cmp[key]]) if key in cmp else set()
-    unstable = set(rec["sets"][rec["unstable"]])
-    if unstable:
-        out |= _lines_tests(rec, node.lineno, node.end_lineno) & unstable
+    for l in range(node.lineno, node.end_lineno + 1):
+        k = unstable.get(str(l))
+        if k is not None:
+            out.update(rec["sets"][k])
     return out
 
 

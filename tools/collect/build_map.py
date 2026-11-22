@@ -215,10 +215,14 @@ for fn in sorted(os.listdir(cov_dir)):
 # Tests whose coverage differs between repeated runs (unstable_tests.py): the
 # comparison evidence may come from fewer runs than the line coverage, so the
 # selector adds these tests wherever they execute the edited comparison.
-unstable = set()
+unstable_lines = collections.defaultdict(lambda: collections.defaultdict(set))  # rel -> line -> tests
 _up = os.path.join(cov_dir, "unstable.json")
 if os.path.exists(_up):
-    unstable = {index[t] for t in json.load(open(_up))["unstable"] if t in index}
+    for _t, _per in json.load(open(_up))["lines"].items():
+        if _t in index:
+            for _rel, _ls in _per.items():
+                for _l in _ls:
+                    unstable_lines[_rel][_l].add(index[_t])
 elif cmp_files:
     sys.exit("comparison evidence needs unstable.json (tools/collect/unstable_tests.py)")
 
@@ -613,7 +617,7 @@ for rel, src in files.items():
         "module": sid(module_tests),
         "classes": {q: sid(s) for q, s in class_tests.items()},
         "readers": sid(readers.get(rel, set())),
-        "unstable": sid(unstable & set().union(set(), *by_line.values())),
+        "unstable": {str(l): sid(ts) for l, ts in sorted(unstable_lines.get(rel, {}).items())},
         "sets": sets,
     }
 

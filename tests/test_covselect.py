@@ -50,7 +50,7 @@ def make_map():
                 "module": 5,
                 "classes": {"Box": 4},
                 "readers": 6,
-                "unstable": 6,
+                "unstable": {},
                 "attrs": {"Box": {"SIZE": 7}},
                 "sets": sets,
             }
@@ -191,12 +191,13 @@ class CovSelectTests(unittest.TestCase):
         new = src.replace("n > LIMIT", "n >= LIMIT")
         self.assertEqual(select(patch(src, new), self.map), {2})
 
-    def test_swap_adds_unstable_tests_executing_the_node(self):
+    def test_swap_adds_tests_whose_execution_of_the_node_varied(self):
         rec = self.map["files"]["pkg/box.py"]
-        rec["sets"].append([1, 3])
-        rec["unstable"] = len(rec["sets"]) - 1
+        rec["sets"].append([1])
+        rec["sets"].append([3])
+        rec["unstable"] = {"15": len(rec["sets"]) - 2, "16": len(rec["sets"]) - 1}
         rec["cmp"] = {"15:11": 2}
-        # test 1 is unstable and executes line 15; test 3 does not execute it
+        # test 1's execution of line 15 varied between runs; test 3 varied elsewhere
         self.assertEqual(self.sel(SRC.replace("if n > LIMIT", "if n >= LIMIT")), {1, 2})
 
     def test_swap_without_unstable_record_uses_lines(self):

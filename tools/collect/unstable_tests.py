@@ -31,6 +31,15 @@ def per_test(run):
 
 runs = [per_test(r) for r in sys.argv[2:]]
 tests = set().union(*runs)
-unstable = sorted(t for t in tests if len({frozenset(r.get(t, ())) for r in runs}) > 1)
-json.dump({"runs": sys.argv[2:], "unstable": unstable}, open(sys.argv[1], "w"), indent=0)
-print(len(unstable), "unstable of", len(tests))
+unstable, lines = [], {}
+for t in sorted(tests):
+    seen = [r[t] for r in runs if t in r]  # partial runs only count where t ran
+    if len({frozenset(x) for x in seen}) > 1:
+        unstable.append(t)
+        var = set().union(*seen) - set.intersection(*map(set, seen))
+        per = collections.defaultdict(list)
+        for path, line in sorted(var):
+            per[path.split("/src/sqlglot/")[-1]].append(line)
+        lines[t] = per
+json.dump({"runs": sys.argv[2:], "unstable": unstable, "lines": lines}, open(sys.argv[1], "w"))
+print(len(unstable), "unstable of", len(tests), ";", sum(len(v) for p in lines.values() for v in p.values()), "varying lines")
