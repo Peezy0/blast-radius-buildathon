@@ -339,9 +339,14 @@ class _Loader(importlib.abc.Loader):
         return getattr(self.inner, item)
 
 def _cmp_mark(nid):
-    (_import_cmp if _import_depth[0] else _CMPCUR[0]).add(nid)
+    if _import_depth[0]:
+        _import_cmp.add(nid)
+        _import_cmp_by.setdefault(_import_ctx_stack[-1] if _import_ctx_stack else "", set()).add(nid)
+    else:
+        _CMPCUR[0].add(nid)
 
 _import_cmp = set()
+_import_cmp_by = {}  # "import:<module>" -> nids marked while that module executed
 
 _SIMPLE = (int, float, str, bytes, bool, type(None), complex)
 
@@ -662,7 +667,8 @@ def pytest_sessionfinish(session, exitstatus):
 
 def _cmp_out():
     return {"obs": {k: sorted(v) for k, v in _cmp_obs.items() if v},
-            "import": sorted(_import_cmp), "files": sorted(_cmp_files)}
+            "import": sorted(_import_cmp), "files": sorted(_cmp_files),
+            "import_by": {k: sorted(v) for k, v in _import_cmp_by.items()}}
 
 def _types_out():
     out = {}

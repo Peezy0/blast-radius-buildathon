@@ -197,13 +197,24 @@ def instantiators_of_module(rel):
 
 # ---- comparison infection evidence (br_collect comparison recorder) ----
 cmp_tests = collections.defaultdict(set)   # "rel:line:col" -> tests
-cmp_import = set()
+cmp_import = set()   # marked outside any test with no module known: fall back
+cmp_import_mods = collections.defaultdict(set)  # nid -> modules whose import marked it
 cmp_files = set()
 for fn in sorted(os.listdir(cov_dir)):
     if fn == "cmp.json" or fn.startswith("worker-cmp-"):
         d = json.load(open(os.path.join(cov_dir, fn)))
         cmp_files.update(d.get("files", []))
-        cmp_import.update(d.get("import", []))
+        if "import_by" in d:
+            # marked while a sqlglot module executed: like an import-time line,
+            # the effect reaches every test that depends on that module
+            for ictx, nids in d["import_by"].items():
+                if ictx.startswith("import:"):
+                    for n in nids:
+                        cmp_import_mods[n].add(ictx[len("import:"):])
+                else:
+                    cmp_import.update(nids)
+        else:
+            cmp_import.update(d.get("import", []))
         for ctx, nids in d.get("obs", {}).items():
             ts = ctx_tests(ctx)
             if ts is None:
@@ -609,8 +620,10 @@ for rel, src in files.items():
         "attrs": attrs,
         "dictkeys": dk,
         "cmp": None if rel not in cmp_files else {
-            n[len(rel) + 1:]: (None if n in cmp_import else sid(cmp_tests.get(n, set())))
-            for n in set(cmp_tests) | cmp_import if n.startswith(rel + ":")
+            n[len(rel) + 1:]: (None if n in cmp_import or any(
+                m not in M2F for m in cmp_import_mods.get(n, ())) else sid(cmp_tests.get(n, set()).union(
+                *(tests_if_import_fails(m) for m in cmp_import_mods.get(n, ())))))
+            for n in set(cmp_tests) | cmp_import | set(cmp_import_mods) if n.startswith(rel + ":")
         },
         "source": src,
         "lines": {str(l): sid(ts) for l, ts in sorted(by_line.items()) if ts},
