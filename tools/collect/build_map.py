@@ -532,6 +532,65 @@ reqargs_keys = collections.defaultdict(set)
 for (c, k) in list(reqargs_missing) + list(reqargs_import):
     reqargs_keys[c].add((c, k))
 
+# ---- scalar tokenizer flag evidence (br_tokflags run, optional) ----
+# Tokenizer._init_core copies scalar flags into TokenizerCore fields; a flag's
+# value matters only where that field (or the flag itself, elsewhere) is read.
+tok_uses = collections.defaultdict(set)   # flag definition key -> tests
+tok_bad = set()                           # keys used outside any test
+tok_flags = {}
+tok_unknown = set()                       # flags read from a core of unknown origin
+_tk_files = [os.path.join(cov_dir, f) for f in sorted(os.listdir(cov_dir)) if f.startswith("tok.json.")]
+for fn in _tk_files:
+    d = json.load(open(fn))
+    tok_flags.update(d["flags"])
+    for ctx, keys in d["uses"].items():
+        ts = ctx_tests(ctx)
+        for k in keys:
+            if k.startswith("?:"):
+                tok_unknown.add(k[2:])
+            elif ts is None:
+                tok_bad.add(k)
+            else:
+                tok_uses[k] |= ts
+
+_tok_static = {}
+def _tok_static_ok(name):
+    """Every load of attribute `name` in sqlglot runs inside a function (so the
+    recording descriptor sees it), and in tokens.py only inside _init_core."""
+    if name in _tok_static:
+        return _tok_static[name]
+    ok = True
+    for rel in files:
+        if not rel.startswith("sqlglot/"):
+            continue
+        tree = _src_tree(rel)
+        if tree is None:
+            ok = False; break
+        stack = [(tree, None)]
+        while stack and ok:
+            node, fn = stack.pop()
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                fn = getattr(node, "name", "<lambda>")
+            for ch in ast.iter_child_nodes(node):
+                stack.append((ch, fn))
+            hit = (isinstance(node, ast.Attribute) and node.attr == name and isinstance(node.ctx, ast.Load)) or (
+                isinstance(node, ast.Constant) and node.value == name)
+            if not hit:
+                continue
+            if fn is None or (rel == "sqlglot/tokens.py" and fn != "_init_core"):
+                ok = False
+        if not ok:
+            break
+    _tok_static[name] = ok
+    return ok
+
+def tok_flag_readers(key, name):
+    if not _tk_files or name not in tok_flags or name in tok_unknown or key in tok_bad:
+        return None
+    if not _tok_static_ok(name):
+        return None
+    return tok_uses.get(key, set()) | SUBPROCESS_TESTS
+
 _kr_memo = {}
 def key_readers(dkey, tok):
     """Tests that can observe a change to dkey's value under key token tok, or
@@ -689,6 +748,10 @@ for rel, src in files.items():
             prefix = m + ":" + q + "."
             for key in [k for k in instrumented if k.startswith(prefix)]:
                 name = key[len(prefix):]
+                tr = None if "." in name else tok_flag_readers(key, name)
+                if tr is not None:
+                    per[name] = sid(tr)
+                    continue
                 if "." in name or key in import_keys or name in STATIC_IMPORT_NAMES or name in dt_names:
                     continue
                 per[name] = sid(attr_reads.get(key, set()))
