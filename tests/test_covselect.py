@@ -209,8 +209,10 @@ class CovSelectTests(unittest.TestCase):
         new = SRC.replace("def grow(self, n=1):", "def grow(self, n=2):")
         self.map["files"]["pkg/box.py"]["cmp"] = {"D:13:n": 2}
         self.assertEqual(self.sel(new), {2})
-        self.map["files"]["pkg/box.py"]["cmp"] = {}
+        self.map["files"]["pkg/box.py"]["cmp"] = {"D:13:n": 6}
         self.assertEqual(self.sel(new), set())
+        self.map["files"]["pkg/box.py"]["cmp"] = {}
+        self.assertTrue(self.sel(new))  # not instrumented: line rules
 
     def test_default_change_without_evidence_falls_back(self):
         new = SRC.replace("def grow(self, n=1):", "def grow(self, n=2):")

@@ -238,6 +238,35 @@ if os.path.exists(_up):
 elif cmp_files:
     sys.exit("comparison evidence needs unstable.json (tools/collect/unstable_tests.py)")
 
+# Every default the collector instruments (same rule as br_collect), so the
+# selector can tell "never held the default" from "not instrumented".
+cmp_has_defaults = any(
+    "uninstrumented" in json.load(open(os.path.join(cov_dir, fn)))
+    for fn in os.listdir(cov_dir) if fn == "cmp.json" or fn.startswith("worker-cmp-"))
+
+def default_nodes(rel):
+    out = []
+    try:
+        tree = ast.parse(files[rel])
+    except Exception:
+        return out
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        a = node.args
+        pos = a.posonlyargs + a.args
+        pairs = list(zip(pos[len(pos) - len(a.defaults):], a.defaults)) + \
+            [(p, d) for p, d in zip(a.kwonlyargs, a.kw_defaults) if d is not None]
+        b = node.body
+        k = 1 if (b and isinstance(b[0], ast.Expr) and isinstance(b[0].value, ast.Constant)
+                  and isinstance(b[0].value.value, str)) else 0
+        if len(b) <= k:
+            continue
+        for p, d in pairs:
+            if isinstance(d, ast.Constant) and type(d.value) in (bool, int, str, float, bytes, type(None)):
+                out.append("D:%d:%s" % (node.lineno, p.arg))
+    return out
+
 # ---- class data-attribute reads ----
 attr_reads = collections.defaultdict(set)
 import_keys = set()
@@ -621,10 +650,11 @@ for rel, src in files.items():
         "attrs": attrs,
         "dictkeys": dk,
         "cmp": None if rel not in cmp_files else {
-            n[len(rel) + 1:]: (None if n in cmp_import or any(
+            **({k: sid(set()) for k in default_nodes(rel)} if cmp_has_defaults else {}),
+            **{n[len(rel) + 1:]: (None if n in cmp_import or any(
                 m not in M2F for m in cmp_import_mods.get(n, ())) else sid(cmp_tests.get(n, set()).union(
                 *(tests_if_import_fails(m) for m in cmp_import_mods.get(n, ())))))
-            for n in set(cmp_tests) | cmp_import | set(cmp_import_mods) if n.startswith(rel + ":")
+            for n in set(cmp_tests) | cmp_import | set(cmp_import_mods) if n.startswith(rel + ":")},
         },
         "source": src,
         "lines": {str(l): sid(ts) for l, ts in sorted(by_line.items()) if ts},

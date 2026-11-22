@@ -523,10 +523,11 @@ def _instrumented_code(inner, module):
             k = 1 if (b and isinstance(b[0], ast.Expr) and isinstance(b[0].value, ast.Constant)
                       and isinstance(b[0].value.value, str)) else 0
             if checks and len(b) > k:
-                # located on the first body statement: coverage of other lines is unchanged
+                # line 0: no source line gains a coverage event
                 for c in checks:
                     for sub in ast.walk(c):
-                        ast.copy_location(sub, b[k])
+                        sub.lineno = sub.end_lineno = 0
+                        sub.col_offset = sub.end_col_offset = 0
                 node.body = b[:k] + checks + b[k:]
             elif checks:
                 for c in checks:
