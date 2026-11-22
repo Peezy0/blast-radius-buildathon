@@ -217,37 +217,49 @@ def _pdf_ok(data: bytes) -> bool:
         return False
 
 
-def cmd_verify(a):
-    """Count remaining original identities (plain, UTF-16, inside SolidWorks sections)
-    and check SolidWorks/ZIP structure in the output."""
+def _verify_one(path_str: str, rel: str):
+    """Every check for one output file (runs in a worker; same checks as before)."""
     import io
     import zipfile
-    reg = Registry(a.private)
+    reg = _REG
+    path_leak = reg.sub_str(rel) != rel
+    data = Path(path_str).read_bytes()
+    kind = classify(data[:8192], Path(path_str).name, len(data))
+    c = _hits(data, kind, Path(path_str).name, reg)
+    struct = None
+    pdf_bad = False
+    if kind == "swx":
+        if swfile.check(data)["valid_sections"] == 0:
+            struct = "no valid sections"
+    elif kind == "pdf":
+        pdf_bad = not _pdf_ok(data)
+    elif kind == "zip":
+        try:
+            if zipfile.ZipFile(io.BytesIO(data)).testzip():
+                struct = "zip crc"
+        except Exception as e:
+            struct = type(e).__name__
+    return rel, path_leak, kind, c, struct, pdf_bad
+
+
+def cmd_verify(a):
+    """Count remaining original identities (plain, UTF-16, inside SolidWorks sections)
+    and check SolidWorks/ZIP structure in the output. Files are checked in parallel
+    (--jobs); results are collected in path order, so the report is identical."""
     root = Path(a.output)
     leaks, struct_bad, pdf_bad, n = Counter(), [], [], 0
-    for p in iter_files(root):
-        n += 1
-        rel = p.relative_to(root).as_posix()
-        if reg.sub_str(rel) != rel:
-            leaks["path"] += 1
-        data = p.read_bytes()
-        kind = classify(data[:8192], p.name, len(data))
-        c = _hits(data, kind, p.name, reg)
-        if kind == "swx":
-            if swfile.check(data)["valid_sections"] == 0:
-                struct_bad.append((rel, "no valid sections"))
-        elif kind == "pdf":
-            if not _pdf_ok(data):
+    jobs = [(str(p), p.relative_to(root).as_posix()) for p in iter_files(root)]
+    with ProcessPoolExecutor(max(1, a.jobs), initializer=_init, initargs=(a.private,)) as ex:
+        for rel, path_leak, kind, c, struct, bad_pdf in ex.map(_verify_one, *zip(*jobs), chunksize=4) if jobs else []:
+            n += 1
+            if path_leak:
+                leaks["path"] += 1
+            if struct:
+                struct_bad.append((rel, struct))
+            if bad_pdf:
                 pdf_bad.append(rel)
-        elif kind == "zip":
-            try:
-                bad = zipfile.ZipFile(io.BytesIO(data)).testzip()
-                if bad:
-                    struct_bad.append((rel, "zip crc"))
-            except Exception as e:
-                struct_bad.append((rel, type(e).__name__))
-        if c:
-            leaks[kind] += c
+            if c:
+                leaks[kind] += c
     out = {"files": n, "remaining_identity_hits_by_kind": leaks, "structure_problems": len(struct_bad),
            "pdf_unreadable": len(pdf_bad)}
     Path(a.private, "verify-report.json").write_text(
