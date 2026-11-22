@@ -204,6 +204,7 @@ for fn in sorted(os.listdir(cov_dir)):
     if fn == "cmp.json" or fn.startswith("worker-cmp-"):
         d = json.load(open(os.path.join(cov_dir, fn)))
         cmp_files.update(d.get("files", []))
+        cmp_import.update(d.get("uninstrumented", []))  # no evidence: fall back
         if "import_by" in d:
             # marked while a sqlglot module executed: like an import-time line,
             # the effect reaches every test that depends on that module

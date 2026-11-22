@@ -61,6 +61,7 @@ _CUR = [_attr_reads.setdefault("collect", set())]
 _cmp_obs = {}
 _CMPCUR = [_cmp_obs.setdefault("collect", set())]
 _cmp_files = set()
+_cmp_files_partial = set()  # default nids that could not be instrumented
 
 class _AttrRec:
     __slots__ = ("key", "value")
@@ -454,6 +455,11 @@ def _brc_bb(nid, isand, b):
         _cmp_mark(nid)
     return b
 
+def _brd(nid, v, d):
+    # mark when the parameter equals the default constant (same type)
+    if v is d or (type(v) is type(d) and type(d) not in (bool, type(None)) and v == d):
+        _cmp_mark(nid)
+
 def _instrumented_code(inner, module):
     """Compile a sqlglot module with each single comparison routed through a
     recorder (same line/column positions, so coverage is unaffected)."""
@@ -497,6 +503,36 @@ def _instrumented_code(inner, module):
             if isinstance(node.op, ast.Not):
                 node.operand = cond(node.operand)
             return node
+        def visit_FunctionDef(self, node):
+            self.generic_visit(node)
+            # default-use evidence: a constant default only matters in calls
+            # where the parameter holds that value (omitted, or passed equal)
+            a = node.args
+            pos = a.posonlyargs + a.args
+            pairs = list(zip(pos[len(pos) - len(a.defaults):], a.defaults)) + \
+                [(p, d) for p, d in zip(a.kwonlyargs, a.kw_defaults) if d is not None]
+            checks = []
+            for p, d in pairs:
+                if not isinstance(d, ast.Constant) or type(d.value) not in (bool, int, str, float, bytes, type(None)):
+                    continue
+                nid = "%s:D:%d:%s" % (rel, node.lineno, p.arg)
+                checks.append(ast.Expr(ast.Call(func=ast.Name(id="_brd", ctx=ast.Load()),
+                                                args=[ast.Constant(nid), ast.Name(id=p.arg, ctx=ast.Load()),
+                                                      ast.Constant(d.value)], keywords=[])))
+            b = node.body
+            k = 1 if (b and isinstance(b[0], ast.Expr) and isinstance(b[0].value, ast.Constant)
+                      and isinstance(b[0].value.value, str)) else 0
+            if checks and len(b) > k:
+                # located on the first body statement: coverage of other lines is unchanged
+                for c in checks:
+                    for sub in ast.walk(c):
+                        ast.copy_location(sub, b[k])
+                node.body = b[:k] + checks + b[k:]
+            elif checks:
+                for c in checks:
+                    _cmp_files_partial.add(c.value.args[0].value)
+            return node
+        visit_AsyncFunctionDef = visit_FunctionDef
         def visit_Compare(self, node):
             self.generic_visit(node)
             if len(node.ops) != 1 or type(node.ops[0]) not in ops:
@@ -515,7 +551,7 @@ def _instrumented_code(inner, module):
     except Exception:
         return None
     g = module.__dict__
-    for fname in list(ops.values()) + ["_brc_ba", "_brc_bb"]:
+    for fname in list(ops.values()) + ["_brc_ba", "_brc_bb", "_brd"]:
         g[fname] = globals()[fname]
     _cmp_files.add(rel)
     return code
@@ -668,7 +704,8 @@ def pytest_sessionfinish(session, exitstatus):
 def _cmp_out():
     return {"obs": {k: sorted(v) for k, v in _cmp_obs.items() if v},
             "import": sorted(_import_cmp), "files": sorted(_cmp_files),
-            "import_by": {k: sorted(v) for k, v in _import_cmp_by.items()}}
+            "import_by": {k: sorted(v) for k, v in _import_cmp_by.items()},
+            "uninstrumented": sorted(_cmp_files_partial)}
 
 def _types_out():
     out = {}

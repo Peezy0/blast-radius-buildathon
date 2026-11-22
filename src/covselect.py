@@ -623,6 +623,51 @@ def _cmp_swap_tests(rec, oidx, nidx, old_line, new_line):
     return _cmp_evidence(rec, "%d:%d" % (node.lineno, node.col_offset), node)
 
 
+_DEFAULT_TYPES = (bool, int, str, float, bytes, type(None))
+
+
+def _default_value_tests(rec, oidx, nidx, old_line, new_line):
+    """Only one constant default of a function changed: the function body is
+    unchanged, so only calls in which the parameter held the old default value
+    (omitted, or passed equal) can behave differently."""
+    if rec.get("cmp") is None:
+        return None
+    so, sn = oidx.stmt(old_line), nidx.stmt(new_line)
+    if not so or not sn:
+        return None
+    fo, fn = so[2], sn[2]
+    if not isinstance(fo, (ast.FunctionDef, ast.AsyncFunctionDef)) or type(fo) is not type(fn):
+        return None
+    ao, an = fo.args, fn.args
+    if len(ao.defaults) != len(an.defaults) or len(ao.kw_defaults) != len(an.kw_defaults):
+        return None
+    pos = ao.posonlyargs + ao.args
+    slots = [(p, "defaults", i) for i, p in enumerate(pos[len(pos) - len(ao.defaults):])] + \
+        [(p, "kw_defaults", i) for i, p in enumerate(ao.kwonlyargs) if ao.kw_defaults[i] is not None]
+    changed = []
+    for p, field, i in slots:
+        do, dn = getattr(ao, field)[i], getattr(an, field)[i]
+        if dn is None or ast.dump(do) != ast.dump(dn):
+            changed.append((p, field, i, do, dn))
+    if len(changed) != 1:
+        return None
+    p, field, i, do, dn = changed[0]
+    if not isinstance(do, ast.Constant) or type(do.value) not in _DEFAULT_TYPES:
+        return None
+    if not isinstance(dn, ast.Constant):
+        return None
+    lst = getattr(an, field)
+    lst[i] = do
+    same = ast.dump(fo) == ast.dump(fn)
+    lst[i] = dn
+    if not same:
+        return None
+    if len(fo.body) <= (1 if (isinstance(fo.body[0], ast.Expr) and isinstance(fo.body[0].value, ast.Constant)
+                              and isinstance(fo.body[0].value.value, str)) else 0):
+        return None  # not instrumented (docstring-only body)
+    return _cmp_evidence(rec, "D:%d:%s" % (fo.lineno, p.arg), fo)
+
+
 def _bool_context(node, parent):
     """Mirror of the collector: a two-value BoolOp whose value is only used
     for its truth (if/while/ternary/assert test, comprehension filter, `not`)."""
@@ -658,31 +703,6 @@ def _boolop_swap_tests(rec, oidx, nidx, old_line, new_line):
     return _cmp_evidence(rec, "B:%d:%d" % (node.lineno, node.col_offset), node)
 
 
-def _doc_lines(tree):
-    out = set()
-    for n in ast.walk(tree):
-        if isinstance(n, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-            b = n.body
-            if b and isinstance(b[0], ast.Expr) and isinstance(b[0].value, ast.Constant) \
-                    and isinstance(b[0].value.value, str):
-                out.update(range(b[0].lineno, b[0].end_lineno + 1))
-    return out
-
-
-def _docstrings_blanked(tree):
-    """Dump with every non-empty docstring replaced by a placeholder (None if
-    some docstring is empty: `__doc__ or ""` style reads would see it)."""
-    for n in ast.walk(tree):
-        if isinstance(n, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-            b = n.body
-            if b and isinstance(b[0], ast.Expr) and isinstance(b[0].value, ast.Constant) \
-                    and isinstance(b[0].value.value, str):
-                if not b[0].value.value.strip():
-                    return None
-                b[0].value.value = "<doc>"
-    return ast.dump(tree)
-
-
 def select_file(rec, hunks):
     source = rec["source"]
     new_source, deleted, added = apply(source, hunks)
@@ -693,13 +713,6 @@ def select_file(rec, hunks):
         raise Unknown("syntax error")
     if ast.dump(old_tree) == ast.dump(new_tree):
         return set(rec["sets"][rec["readers"]])
-    # only docstring text changed: no sqlglot code or test reads __doc__ text
-    # (doctests are not part of the suite), so only source readers can see it
-    dl = _doc_lines(old_tree)
-    if all(l in dl for l in deleted) and all(a[0] in _doc_lines(new_tree) for a in added):
-        db_old = _docstrings_blanked(ast.parse(source))
-        if db_old is not None and db_old == _docstrings_blanked(ast.parse(new_source)):
-            return set(rec["sets"][rec["readers"]])
     old_lines = source.split("\n")
     new_lines = new_source.split("\n")
     old_spans, new_spans = _string_spans(old_tree), _string_spans(new_tree)
@@ -735,6 +748,8 @@ def select_file(rec, hunks):
                 dv = _cmp_swap_tests(rec, oidx, nidx, paired, new_line)
                 if dv is None:
                     dv = _boolop_swap_tests(rec, oidx, nidx, paired, new_line)
+                if dv is None:
+                    dv = _default_value_tests(rec, oidx, nidx, paired, new_line)
                 if dv is None:
                     dv = _dict_value_tests(rec, oidx, nidx, paired, new_line, attr_ok)
                 out |= dv if dv is not None else _old_line_tests(rec, oidx, paired, nidx, attr_ok)
