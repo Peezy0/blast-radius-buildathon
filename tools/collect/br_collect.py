@@ -371,25 +371,33 @@ def _boundary(nid, a, b):
 
 def _brc_lt(nid, a, b):
     r = a < b
-    if not r:
+    if type(r) is not bool:
+        _cmp_mark(nid)  # overloaded (e.g. builds an expression): could differ
+    elif not r:
         _boundary(nid, a, b)
     return r
 
 def _brc_le(nid, a, b):
     r = a <= b
-    if r:
+    if type(r) is not bool:
+        _cmp_mark(nid)  # overloaded (e.g. builds an expression): could differ
+    elif r:
         _boundary(nid, a, b)
     return r
 
 def _brc_gt(nid, a, b):
     r = a > b
-    if not r:
+    if type(r) is not bool:
+        _cmp_mark(nid)  # overloaded (e.g. builds an expression): could differ
+    elif not r:
         _boundary(nid, a, b)
     return r
 
 def _brc_ge(nid, a, b):
     r = a >= b
-    if r:
+    if type(r) is not bool:
+        _cmp_mark(nid)  # overloaded (e.g. builds an expression): could differ
+    elif r:
         _boundary(nid, a, b)
     return r
 

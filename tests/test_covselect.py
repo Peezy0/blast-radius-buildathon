@@ -50,6 +50,7 @@ def make_map():
                 "module": 5,
                 "classes": {"Box": 4},
                 "readers": 6,
+                "unstable": 6,
                 "attrs": {"Box": {"SIZE": 7}},
                 "sets": sets,
             }
@@ -189,6 +190,19 @@ class CovSelectTests(unittest.TestCase):
         self.map["files"]["pkg/box.py"]["cmp"] = {"15:11": 3, "15:21": 2}
         new = src.replace("n > LIMIT", "n >= LIMIT")
         self.assertEqual(select(patch(src, new), self.map), {2})
+
+    def test_swap_adds_unstable_tests_executing_the_node(self):
+        rec = self.map["files"]["pkg/box.py"]
+        rec["sets"].append([1, 3])
+        rec["unstable"] = len(rec["sets"]) - 1
+        rec["cmp"] = {"15:11": 2}
+        # test 1 is unstable and executes line 15; test 3 does not execute it
+        self.assertEqual(self.sel(SRC.replace("if n > LIMIT", "if n >= LIMIT")), {1, 2})
+
+    def test_swap_without_unstable_record_uses_lines(self):
+        del self.map["files"]["pkg/box.py"]["unstable"]
+        self.map["files"]["pkg/box.py"]["cmp"] = {"15:11": 2}
+        self.assertEqual(self.sel(SRC.replace("if n > LIMIT", "if n >= LIMIT")), {0, 1})
 
     def test_direction_flip_is_not_a_twin(self):
         self.map["files"]["pkg/box.py"]["cmp"] = {}

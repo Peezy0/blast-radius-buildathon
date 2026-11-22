@@ -212,6 +212,16 @@ for fn in sorted(os.listdir(cov_dir)):
             for n in nids:
                 cmp_tests[n] |= ts
 
+# Tests whose coverage differs between repeated runs (unstable_tests.py): the
+# comparison evidence may come from fewer runs than the line coverage, so the
+# selector adds these tests wherever they execute the edited comparison.
+unstable = set()
+_up = os.path.join(cov_dir, "unstable.json")
+if os.path.exists(_up):
+    unstable = {index[t] for t in json.load(open(_up))["unstable"] if t in index}
+elif cmp_files:
+    sys.exit("comparison evidence needs unstable.json (tools/collect/unstable_tests.py)")
+
 # ---- class data-attribute reads ----
 attr_reads = collections.defaultdict(set)
 import_keys = set()
@@ -603,6 +613,7 @@ for rel, src in files.items():
         "module": sid(module_tests),
         "classes": {q: sid(s) for q, s in class_tests.items()},
         "readers": sid(readers.get(rel, set())),
+        "unstable": sid(unstable & set().union(set(), *by_line.values())),
         "sets": sets,
     }
 

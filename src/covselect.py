@@ -580,13 +580,19 @@ def _same_but_op(so, sn, nnode, field, old_op):
     return same
 
 
-def _cmp_evidence(rec, key):
+def _cmp_evidence(rec, key, node):
+    """Tests that recorded the two forms disagreeing at `key`, plus tests
+    whose execution varies between runs wherever they execute the node."""
     cmp = rec["cmp"]
-    if key not in cmp:
-        return set()  # executed or not, the two forms never disagreed
-    if cmp[key] is None:
+    if "unstable" not in rec:
+        return None
+    if key in cmp and cmp[key] is None:
         return None  # could differ while modules were importing
-    return set(rec["sets"][cmp[key]])
+    out = set(rec["sets"][cmp[key]]) if key in cmp else set()
+    unstable = set(rec["sets"][rec["unstable"]])
+    if unstable:
+        out |= _lines_tests(rec, node.lineno, node.end_lineno) & unstable
+    return out
 
 
 def _cmp_swap_tests(rec, oidx, nidx, old_line, new_line):
@@ -613,7 +619,7 @@ def _cmp_swap_tests(rec, oidx, nidx, old_line, new_line):
         return None  # not recorded (`is None` has its own rule)
     if not _same_but_op(so[2], sn[2], nnode, "ops", [type(lo[i])()]):
         return None
-    return _cmp_evidence(rec, "%d:%d" % (node.lineno, node.col_offset))
+    return _cmp_evidence(rec, "%d:%d" % (node.lineno, node.col_offset), node)
 
 
 def _bool_context(node, parent):
@@ -648,7 +654,7 @@ def _boolop_swap_tests(rec, oidx, nidx, old_line, new_line):
         return None
     if not _same_but_op(so[2], sn[2], nnode, "op", type(lo[i])()):
         return None
-    return _cmp_evidence(rec, "B:%d:%d" % (node.lineno, node.col_offset))
+    return _cmp_evidence(rec, "B:%d:%d" % (node.lineno, node.col_offset), node)
 
 
 def select_file(rec, hunks):
