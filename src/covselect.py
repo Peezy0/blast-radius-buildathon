@@ -658,6 +658,26 @@ def _boolop_swap_tests(rec, oidx, nidx, old_line, new_line):
     return _cmp_evidence(rec, "B:%d:%d" % (node.lineno, node.col_offset), node)
 
 
+def _stmt_text(lines, node):
+    start = min([node.lineno] + [d.lineno for d in getattr(node, "decorator_list", [])])
+    return lines[start - 1:node.end_lineno]
+
+
+def _same_module(old_tree, new_tree, source, new_source):
+    """ast.dump(old_tree) == ast.dump(new_tree), dumping only the top-level
+    statements whose source text differs (identical text, identical AST)."""
+    ob, nb = old_tree.body, new_tree.body
+    if len(ob) != len(nb):
+        return False
+    ol, nl = source.split("\n"), new_source.split("\n")
+    for a, b in zip(ob, nb):
+        if type(a) is not type(b):
+            return False
+        if _stmt_text(ol, a) != _stmt_text(nl, b) and ast.dump(a) != ast.dump(b):
+            return False
+    return True
+
+
 def select_file(rec, hunks):
     source = rec["source"]
     new_source, deleted, added = apply(source, hunks)
@@ -666,7 +686,7 @@ def select_file(rec, hunks):
         new_tree = ast.parse(new_source)
     except (SyntaxError, ValueError):
         raise Unknown("syntax error")
-    if ast.dump(old_tree) == ast.dump(new_tree):
+    if _same_module(old_tree, new_tree, source, new_source):
         return set(rec["sets"][rec["readers"]])
     old_lines = source.split("\n")
     new_lines = new_source.split("\n")
@@ -738,6 +758,23 @@ def select_file(rec, hunks):
     return out
 
 
+_DECODED = {}
+
+
+def _file_record(cmap, path):
+    """A file's map record; records may be stored as embedded JSON strings
+    (decoded on first use)."""
+    rec = cmap["files"].get(path)
+    if isinstance(rec, str):
+        key = (id(cmap), path)
+        hit = _DECODED.get(key)
+        if hit is None or hit[0] is not cmap:
+            import json
+            hit = _DECODED[key] = (cmap, json.loads(rec))
+        rec = hit[1]
+    return rec
+
+
 def select(patch_text, cmap):
     files = parse_patch(patch_text)
     out = set()
@@ -755,7 +792,7 @@ def select(patch_text, cmap):
                 continue
             raise Unknown("rename or deletion")
         path = old
-        rec = cmap["files"].get(path)
+        rec = _file_record(cmap, path)
         if rec is not None:
             out |= select_file(rec, hunks)
         elif path in cmap["data"]:
