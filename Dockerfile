@@ -5,5 +5,8 @@ WORKDIR /app
 COPY selector.py /app/selector.py
 COPY src /app/src
 COPY data/map.json.gz /app/data/map.json.gz
+# The slim image ships without bytecode: precompile the standard library and
+# our modules so each run does not recompile them (CPU is scored).
+RUN python -m compileall -q -j 0 /usr/local/lib/python3.13 /app/src /app/selector.py >/dev/null 2>&1 || true
 USER 65534:65534
 CMD ["python", "/app/selector.py", "--map", "/app/data/map.json.gz"]
