@@ -205,6 +205,24 @@ class CovSelectTests(unittest.TestCase):
         self.map["files"]["pkg/box.py"]["cmp"] = {"15:11": 2}
         self.assertEqual(self.sel(SRC.replace("if n > LIMIT", "if n >= LIMIT")), {0, 1})
 
+    def test_docstring_text_change_selects_only_source_readers(self):
+        src = SRC.replace("def helper(v):\n", 'def helper(v):\n    """Return v."""\n')
+        self.map["files"]["pkg/box.py"]["source"] = src
+        new = src.replace("Return v.", "Return the value v.")
+        self.assertEqual(select(patch(src, new), self.map), set())
+
+    def test_docstring_emptied_is_not_text_only(self):
+        src = SRC.replace("def helper(v):\n", 'def helper(v):\n    """Return v."""\n')
+        self.map["files"]["pkg/box.py"]["source"] = src
+        new = src.replace('"""Return v."""', '""""""')
+        # falls through to the line rules (helper is run by no test here)
+        self.map["files"]["pkg/box.py"]["readers"] = 7
+        self.assertEqual(select(patch(src, new), self.map), {0, 1})
+        import ast
+        from src.covselect import _docstrings_blanked
+        self.assertIsNone(_docstrings_blanked(ast.parse(new)))
+        self.assertIsNotNone(_docstrings_blanked(ast.parse(src)))
+
     def test_direction_flip_is_not_a_twin(self):
         self.map["files"]["pkg/box.py"]["cmp"] = {}
         self.assertEqual(self.sel(SRC.replace("if n > LIMIT", "if n < LIMIT")), {0, 1})
