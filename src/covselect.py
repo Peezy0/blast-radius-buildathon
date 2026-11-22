@@ -658,6 +658,17 @@ def _boolop_swap_tests(rec, oidx, nidx, old_line, new_line):
     return _cmp_evidence(rec, "B:%d:%d" % (node.lineno, node.col_offset), node)
 
 
+def _doc_lines(tree):
+    out = set()
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            b = n.body
+            if b and isinstance(b[0], ast.Expr) and isinstance(b[0].value, ast.Constant) \
+                    and isinstance(b[0].value.value, str):
+                out.update(range(b[0].lineno, b[0].end_lineno + 1))
+    return out
+
+
 def _docstrings_blanked(tree):
     """Dump with every non-empty docstring replaced by a placeholder (None if
     some docstring is empty: `__doc__ or ""` style reads would see it)."""
@@ -684,9 +695,11 @@ def select_file(rec, hunks):
         return set(rec["sets"][rec["readers"]])
     # only docstring text changed: no sqlglot code or test reads __doc__ text
     # (doctests are not part of the suite), so only source readers can see it
-    db_old = _docstrings_blanked(ast.parse(source))
-    if db_old is not None and db_old == _docstrings_blanked(ast.parse(new_source)):
-        return set(rec["sets"][rec["readers"]])
+    dl = _doc_lines(old_tree)
+    if all(l in dl for l in deleted) and all(a[0] in _doc_lines(new_tree) for a in added):
+        db_old = _docstrings_blanked(ast.parse(source))
+        if db_old is not None and db_old == _docstrings_blanked(ast.parse(new_source)):
+            return set(rec["sets"][rec["readers"]])
     old_lines = source.split("\n")
     new_lines = new_source.split("\n")
     old_spans, new_spans = _string_spans(old_tree), _string_spans(new_tree)
