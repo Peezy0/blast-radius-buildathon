@@ -343,73 +343,103 @@ def _cmp_mark(nid):
 
 _import_cmp = set()
 
+_SIMPLE = (int, float, str, bytes, bool, type(None), complex)
+
+def _simple(x):
+    """Values whose == is side-effect free and cheap to evaluate here."""
+    t = type(x)
+    if t in _SIMPLE or isinstance(x, enum.Enum):
+        return True
+    if t is tuple or t is frozenset:
+        return all(_simple(y) for y in x)
+    if isinstance(x, type):
+        return type(x) is type or type(x).__eq__ is type.__eq__
+    return False
+
+def _eq_known(a, b):
+    """a == b when it can be evaluated safely, else None (unknown)."""
+    if _simple(a) and _simple(b):
+        try:
+            return bool(a == b)
+        except Exception:
+            return None
+    return None
+
+def _boundary(nid, a, b):
+    if _eq_known(a, b) is not False:
+        _cmp_mark(nid)  # equal, or not safely decidable
+
 def _brc_lt(nid, a, b):
     r = a < b
     if not r:
-        try:
-            if a == b: _cmp_mark(nid)
-        except Exception:
-            _cmp_mark(nid)
+        _boundary(nid, a, b)
     return r
 
 def _brc_le(nid, a, b):
     r = a <= b
     if r:
-        try:
-            if a == b: _cmp_mark(nid)
-        except Exception:
-            _cmp_mark(nid)
+        _boundary(nid, a, b)
     return r
 
 def _brc_gt(nid, a, b):
     r = a > b
     if not r:
-        try:
-            if a == b: _cmp_mark(nid)
-        except Exception:
-            _cmp_mark(nid)
+        _boundary(nid, a, b)
     return r
 
 def _brc_ge(nid, a, b):
     r = a >= b
     if r:
-        try:
-            if a == b: _cmp_mark(nid)
-        except Exception:
-            _cmp_mark(nid)
+        _boundary(nid, a, b)
     return r
 
 def _brc_eq(nid, a, b):
     r = a == b
-    try:
-        if bool(r) != (a is b): _cmp_mark(nid)
-    except Exception:
+    if a is b:
+        if r is not True:
+            _cmp_mark(nid)  # e.g. NaN, or a non-bool result
+    elif r is not False:
         _cmp_mark(nid)
     return r
 
 def _brc_ne(nid, a, b):
     r = a != b
-    try:
-        if bool(r) != (a is not b): _cmp_mark(nid)
-    except Exception:
+    if a is b:
+        if r is not False:
+            _cmp_mark(nid)
+    elif r is not True:
         _cmp_mark(nid)
     return r
 
 def _brc_is(nid, a, b):
+    # `a is b` vs `a == b`: differ when identical but unequal, or equal but
+    # not identical; == is only evaluated for simple values (else: recorded)
     r = a is b
-    try:
-        if bool(a == b) != r: _cmp_mark(nid)
-    except Exception:
+    e = _eq_known(a, b)
+    if e is None or e != r:
         _cmp_mark(nid)
     return r
 
 def _brc_isnot(nid, a, b):
     r = a is not b
-    try:
-        if bool(a != b) != r: _cmp_mark(nid)
-    except Exception:
+    e = _eq_known(a, b)
+    if e is None or e == r:
         _cmp_mark(nid)
     return r
+
+def _brc_ba(nid, isand, a):
+    # first operand of `a and b` / `a or b` used as a condition: when it
+    # short-circuits, the swapped operator would evaluate b (unknown here)
+    if (not a) if isand else a:
+        _cmp_mark(nid)
+    return a
+
+def _brc_bb(nid, isand, b):
+    # reached when a was truthy (and) / falsy (or): the swapped operator gives
+    # True (and->or) / False (or->and); it differs when b is falsy / truthy
+    if (not b) if isand else b:
+        _cmp_mark(nid)
+    return b
 
 def _instrumented_code(inner, module):
     """Compile a sqlglot module with each single comparison routed through a
@@ -426,7 +456,34 @@ def _instrumented_code(inner, module):
     rel = os.path.relpath(os.path.realpath(path), ROOT)
     ops = {ast.Lt: "_brc_lt", ast.LtE: "_brc_le", ast.Gt: "_brc_gt", ast.GtE: "_brc_ge",
            ast.Eq: "_brc_eq", ast.NotEq: "_brc_ne", ast.Is: "_brc_is", ast.IsNot: "_brc_isnot"}
+    def cond(test):
+        if isinstance(test, ast.BoolOp) and len(test.values) == 2:
+            isand = isinstance(test.op, ast.And)
+            nid = "%s:B:%d:%d" % (rel, test.lineno, test.col_offset)
+            a, b = test.values
+            test.values = [
+                ast.copy_location(ast.Call(func=ast.Name(id="_brc_ba", ctx=ast.Load()),
+                                           args=[ast.Constant(nid), ast.Constant(isand), a], keywords=[]), a),
+                ast.copy_location(ast.Call(func=ast.Name(id="_brc_bb", ctx=ast.Load()),
+                                           args=[ast.Constant(nid), ast.Constant(isand), b], keywords=[]), b),
+            ]
+        return test
     class T(ast.NodeTransformer):
+        def visit_If(self, node):
+            self.generic_visit(node); node.test = cond(node.test); return node
+        def visit_While(self, node):
+            self.generic_visit(node); node.test = cond(node.test); return node
+        def visit_IfExp(self, node):
+            self.generic_visit(node); node.test = cond(node.test); return node
+        def visit_Assert(self, node):
+            self.generic_visit(node); node.test = cond(node.test); return node
+        def visit_comprehension(self, node):
+            self.generic_visit(node); node.ifs = [cond(t) for t in node.ifs]; return node
+        def visit_UnaryOp(self, node):
+            self.generic_visit(node)
+            if isinstance(node.op, ast.Not):
+                node.operand = cond(node.operand)
+            return node
         def visit_Compare(self, node):
             self.generic_visit(node)
             if len(node.ops) != 1 or type(node.ops[0]) not in ops:
@@ -445,7 +502,7 @@ def _instrumented_code(inner, module):
     except Exception:
         return None
     g = module.__dict__
-    for fname in ops.values():
+    for fname in list(ops.values()) + ["_brc_ba", "_brc_bb"]:
         g[fname] = globals()[fname]
     _cmp_files.add(rel)
     return code
